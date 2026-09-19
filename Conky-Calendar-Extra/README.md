@@ -43,6 +43,8 @@ A sensor that is missing or unreadable now shows as an empty bar instead of blan
 
 <b>Modernized variant</b>
 
+![Conky-Calendar-Extra modernized](screenshot_modernized.png)
+
 <i>lua_widgets_modernized.lua</i> and <i>start_conky_modernized</i> are a second, restyled copy of the same widget. Run it with:
 ```
       conky -c start_conky_modernized
