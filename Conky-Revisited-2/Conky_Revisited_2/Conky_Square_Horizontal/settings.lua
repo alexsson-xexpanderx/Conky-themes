@@ -96,6 +96,21 @@ gap_x_distance = 10
 
 
 require 'cairo'
+-- Conky moved cairo_xlib_surface_create into its own module; older builds
+-- still export it from 'cairo', so a missing module here is harmless.
+pcall(require, 'cairo_xlib')
+
+-- Newer Conky hands out a cached surface for its own window and keeps ownership
+-- of it; older builds need an xlib surface made (and freed) on every draw. The
+-- second return value says whether this code is responsible for destroying it.
+local function conky_window_surface()
+  if type(conky_surface) == "function" then
+    return conky_surface(), false
+  end
+  return cairo_xlib_surface_create(conky_window.display, conky_window.drawable,
+                                   conky_window.visual, conky_window.width,
+                                   conky_window.height), true
+end
 
 operator = {CAIRO_OPERATOR_SOURCE,
 			CAIRO_OPERATOR_CLEAR
@@ -451,7 +466,7 @@ function conky_start_widgets()
 	-- Check that Conky has been running for at least 5s
 
 	if conky_window==nil then return end
-	local cs=cairo_xlib_surface_create(conky_window.display,conky_window.drawable,conky_window.visual, conky_window.width,conky_window.height)
+	local cs, owns_surface = conky_window_surface()
 	
 	local cr=cairo_create(cs)	
 	
@@ -461,6 +476,6 @@ function conky_start_widgets()
 	if update_num>5 then
 		draw_conky_function(cr)
 	end
-	cairo_surface_destroy(cs)
 	cairo_destroy(cr)
+	if owns_surface then cairo_surface_destroy(cs) end
 end

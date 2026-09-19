@@ -1,47 +1,49 @@
-background no
-update_interval 1
+conky.config = {
+	background = false,
+	update_interval = 1,
 
-override_utf8_locale yes
+	override_utf8_locale = true,
 
-double_buffer yes
-no_buffers yes
+	double_buffer = true,
+	no_buffers = true,
 
-text_buffer_size 2048
-imlib_cache_size 0
-
-
-own_window yes
-own_window_transparent yes
-own_window_argb_visual yes
-own_window_type normal
-#own_window_class conky-semi
-own_window_hints undecorated,below,sticky,skip_taskbar,skip_pager
-
-border_inner_margin 0
-border_outer_margin 0
-
-minimum_size 600 1000   #width height
+	text_buffer_size = 2048,
+	imlib_cache_size = 0,
 
 
-alignment tm
-gap_x 0
-gap_y 0
+	own_window = true,
+	own_window_type = 'normal',
+	own_window_colour = '#00000000',
+--	own_window_class = 'conky-semi',
+	own_window_hints = 'undecorated,below,sticky,skip_taskbar,skip_pager',
 
-draw_shades yes
-draw_outline no
-draw_borders no
-draw_graph_borders no
+	border_inner_margin = 0,
+	border_outer_margin = 0,
 
-use_xft yes
-xftfont pftempestafivecondensed:size=6
-xftalpha 0.5
+	minimum_width = 600, minimum_height = 1000,--width height
 
-uppercase no
 
-default_color FFFFFF
+	alignment = 'top_middle',
+	gap_x = 0,
+	gap_y = 0,
 
-lua_load  lua_widgets.lua
-lua_draw_hook_pre start_widgets
+	draw_shades = true,
+	draw_outline = false,
+	draw_borders = false,
+	draw_graph_borders = false,
 
-TEXT
+	use_xft = true,
+	font = 'pftempestafivecondensed:size=6',
+	xftalpha = 0.5,
+
+	uppercase = false,
+
+	default_color = '#FFFFFF',
+
+	lua_load = 'lua_widgets.lua',
+	lua_draw_hook_pre = 'start_widgets',
+};
+
+conky.text = [[
 ${color FFFFFF}
+]];

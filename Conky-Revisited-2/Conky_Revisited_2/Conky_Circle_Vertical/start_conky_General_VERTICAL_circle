@@ -13,8 +13,7 @@ conky.config = {
 
 	own_window = true,
 	own_window_type = 'normal',
-	own_window_transparent = true,
-	own_window_argb_visual = true,
+	own_window_colour = '#00000000',
 	own_window_hints = 'undecorated,below,sticky,skip_taskbar,skip_pager',
 
 	border_inner_margin = 0,
