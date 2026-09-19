@@ -1,3 +1,8 @@
+-- Size of the conky window in pixels. The widget centres itself in here and
+-- scales down if it does not fit, so raise this if lua_widgets.lua logs that it
+-- wanted more room (32 temperature bars need about 1000, which is why this is the default).
+local size = 1000
+
 conky.config = {
 	background = false,
 	update_interval = 1,
@@ -20,10 +25,10 @@ conky.config = {
 	border_inner_margin = 0,
 	border_outer_margin = 0,
 
-	minimum_width = 600, minimum_height = 1000,--width height
+	minimum_width = size, minimum_height = size,
 
 
-	alignment = 'top_middle',
+	alignment = 'middle_middle',
 	gap_x = 0,
 	gap_y = 0,
 

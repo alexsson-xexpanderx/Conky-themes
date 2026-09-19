@@ -18,6 +18,12 @@ enable_graphic_card_temperature_sensor = "No"
 -- Temperature a full bar represents, in degrees Celsius.
 max_temperature = 70
 
+-- Diameter in pixels of the outermost ring. Raise it to make the whole widget
+-- bigger. It is a floor, not a cap: the rings grow past it on their own when
+-- the temperature bars need more room, and everything shrinks together if the
+-- conky window in start_conky is smaller than the result.
+widget_size = 450
+
 -- Colors
 HTML_colors = "#000000"
 HTML_colors_current = "#FFFFFF"
@@ -253,8 +259,48 @@ local function create_circle(cr, w, h, elements, distance_between_blocks, two_nu
   cairo_set_operator(cr, CAIRO_OPERATOR_OVER)
 end
 
--- How many gauges to draw: one per core we actually have a sensor for, plus
--- one for the GPU when it is enabled.
+-- Every length below is expressed against this design size and multiplied by
+-- the scale worked out in layout_for(); angles are of course scale-free.
+local BASE_DIAMETER = 450   -- outermost ring at scale 1, i.e. the original look
+local INNER_RADIUS  = 130   -- usable space inside the innermost ring, with margin
+
+-- A gauge is a 10-block column 15 wide and 48 tall with a labelled dot beneath
+-- it, and the block of them starts GAUGE_TOP below the centre of the rings.
+-- The dot hangs GAUGE_DOT_GAP under the column so the circles keep clear of the
+-- bars; DOT_RADIUS_MAX budgets the height a dot may take, which is what lets the
+-- gauge box be measured before the labels are known.
+local GAUGE_WIDTH = 15
+local GAUGE_COLUMN_HEIGHT = 48
+local GAUGE_DOT_GAP = 16
+local DOT_RADIUS_MAX = 10
+local GAUGE_DOT_Y = GAUGE_COLUMN_HEIGHT + GAUGE_DOT_GAP + DOT_RADIUS_MAX
+local GAUGE_HEIGHT = GAUGE_DOT_Y + DOT_RADIUS_MAX
+local GAUGE_PITCH_X = 30
+local GAUGE_PITCH_Y = GAUGE_HEIGHT + 8
+local GAUGE_TOP = 25
+
+-- Wrap the gauges into the grid whose furthest corner sits closest to the
+-- centre, so the rings have to grow as little as possible. For 32 gauges this
+-- picks 16 x 2; for the original 4 it picks a single row, leaving the classic
+-- layout untouched.
+local function grid_for(count)
+  local best
+  for columns = 1, count do
+    local rows = math.ceil(count / columns)
+    local width = GAUGE_PITCH_X * (columns - 1) + GAUGE_WIDTH
+    local height = GAUGE_PITCH_Y * (rows - 1) + GAUGE_HEIGHT
+    local reach = math.sqrt((width / 2) ^ 2 + (GAUGE_TOP + height) ^ 2)
+    if best == nil or reach < best.reach then
+      best = {columns = columns, rows = rows, reach = reach}
+    end
+  end
+  return best
+end
+
+-- The kernel publishes one sensor per physical core, which on a hybrid CPU is
+-- fewer than the thread count htop lists: 8 P-cores plus 16 E-cores is 24
+-- sensors but 32 threads. Drawing a gauge with no sensor behind it would leave
+-- it permanently empty, so the request is capped at what was actually found.
 local function gauge_count()
   ensure_sensors()
   local available = #(cpu_sensors or {})
@@ -263,91 +309,171 @@ local function gauge_count()
   return math.min(wanted, available) + (show_gpu and 1 or 0)
 end
 
--- Column of ten blocks growing upwards from (x, height/2 + y_offset). Blocks are
--- highlighted in proportion to temperature, a full column meaning max_temperature.
-local function vertical_bars(cr, x, height, y_offset, temperature)
-  cairo_set_source_rgba(cr, r, g, b, transparency)
+-- Rings and gauges deliberately do not share a scale. Scaling both together
+-- would enlarge the block by exactly the factor the rings grew by, so it would
+-- never come to fit; instead the gauges keep the size asked for and the rings
+-- grow around them.
+local grid, ring_growth, laid_out_for
 
-  local degrees_per_block = max_temperature / 10
-  local filled_blocks = math.floor((temperature / degrees_per_block) + 0.5)
-
-  for i = 1, 10 do
-    if filled_blocks >= i then
-      cairo_set_source_rgba(cr, r_c, g_c, b_c, transparency)
-    end
-    cairo_rectangle(cr, x, height / 2 + y_offset - i * 5, 15, 3)
-    cairo_fill(cr)
-    cairo_set_source_rgba(cr, r, g, b, transparency)
-  end
+local function layout_for(count)
+  if laid_out_for == count then return end
+  laid_out_for = count
+  grid = grid_for(count)
+  ring_growth = math.max(1, grid.reach / INNER_RADIUS)
 end
 
--- Filled disc with a single character knocked out of it.
-local function labelled_dot(cr, x, y, radius, label, shift_x, shift_y)
+local warned = false
+local function warn_once(count, available, needed)
+  if warned then return end
+  warned = true
+  io.stderr:write(string.format(
+    "conky lua_widgets: %d gauges need a %dpx window; this one is %dpx, so the widget " ..
+    "has been scaled down. Raise minimum_width/minimum_height in start_conky.\n",
+    count, math.ceil(needed), math.floor(available)))
+end
+
+-- Reusing one extents struct avoids allocating per label per redraw.
+local extents
+local function measure(cr, text)
+  extents = extents or cairo_text_extents_t:create()
+  cairo_text_extents(cr, text, extents)
+  return extents
+end
+
+-- Filled disc of exactly the radius asked for, with its label knocked out of
+-- the middle. The radius is the caller's business: sizing each disc to its own
+-- label makes a row of them visibly uneven.
+local function labelled_dot(cr, x, y, radius, label)
+  local size = measure(cr, label)
+
   cairo_arc(cr, x, y, radius, 0, 2 * math.pi)
   cairo_fill(cr)
   cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR)
-  cairo_move_to(cr, x + shift_x, y + shift_y)
+  cairo_move_to(cr, x - size.width / 2 - size.x_bearing, y + size.height / 2)
   cairo_show_text(cr, label)
   cairo_set_operator(cr, CAIRO_OPERATOR_OVER)
 end
 
+-- One radius for every gauge dot, wide enough for the widest label in the set,
+-- so "0" and "31" sit in identical circles.
+local function gauge_dot_radius(cr, scale, count)
+  local widest = 0
+  for index = 1, count do
+    local label = (show_gpu and index == count) and "G" or tostring(index - 1)
+    widest = math.max(widest, measure(cr, label).width)
+  end
+  -- capped so a dot can never exceed the height budgeted for it above
+  return math.min(DOT_RADIUS_MAX * scale, math.max(7 * scale, widest / 2 + 3 * scale))
+end
+
+-- One gauge, with (left, top) the corner of its 15x72 box at this scale.
+local function draw_gauge(cr, left, top, scale, dot_radius, temperature, label)
+  local degrees_per_block = max_temperature / 10
+  local filled_blocks = math.floor((temperature / degrees_per_block) + 0.5)
+
+  cairo_set_source_rgba(cr, r, g, b, transparency)
+  for i = 1, 10 do
+    if filled_blocks >= i then
+      cairo_set_source_rgba(cr, r_c, g_c, b_c, transparency)
+    end
+    cairo_rectangle(cr, left, top + (50 - i * 5) * scale, GAUGE_WIDTH * scale, 3 * scale)
+    cairo_fill(cr)
+    cairo_set_source_rgba(cr, r, g, b, transparency)
+  end
+
+  labelled_dot(cr, left + 8 * scale, top + GAUGE_DOT_Y * scale, dot_radius, label)
+end
+
+-- Rows are centred individually, so a short last row stays balanced.
+local function draw_gauges(cr, center_x, center_y, scale, count)
+  cairo_set_font_size(cr, 12 * scale)
+  local dot_radius = gauge_dot_radius(cr, scale, count)
+
+  local top = center_y + GAUGE_TOP * scale
+  for row = 1, grid.rows do
+    local first = (row - 1) * grid.columns + 1
+    local last = math.min(first + grid.columns - 1, count)
+    local in_row = last - first + 1
+    local row_width = (GAUGE_PITCH_X * (in_row - 1) + GAUGE_WIDTH) * scale
+    local left = center_x - row_width / 2
+
+    for column = 1, in_row do
+      local index = first + column - 1
+      local x = left + GAUGE_PITCH_X * (column - 1) * scale
+      if show_gpu and index == count then
+        draw_gauge(cr, x, top, scale, dot_radius, gpu_temperature(), "G")
+      else
+        draw_gauge(cr, x, top, scale, dot_radius, cpu_temperature(index), tostring(index - 1))
+      end
+    end
+
+    top = top + GAUGE_PITCH_Y * scale
+  end
+end
+
 local function draw_function(cr)
   local w, h = conky_window.width, conky_window.height
-  local center_x, center_y = (w - x_rel_pos) / 2, (h - y_rel_pos) / 2
-  local count = gauge_count()
+  local width, height = w - x_rel_pos, h - y_rel_pos
+  local center_x, center_y = width / 2, height / 2
 
-  cairo_set_line_width(cr, 3)
-  cairo_set_font_size(cr, 12)
+  -- Never draw larger than the window; shrinking everything by one factor keeps
+  -- the layout intact where clipping would not.
+  local count = gauge_count()
+  layout_for(count)
+
+  local base = widget_size / BASE_DIAMETER
+  local needed = BASE_DIAMETER * base * ring_growth
+  local available = math.min(width, height)
+  local fit = math.min(1, available / needed)
+  if fit < 0.99 then warn_once(count, available, needed) end
+
+  local gauge_scale = base * fit
+  local scale = base * ring_growth * fit   -- everything positioned off the rings
+
+  cairo_set_line_width(cr, 3 * scale)
+  cairo_set_font_size(cr, 12 * scale)
   cairo_select_font_face(cr, "Dejavu Sans Condensed", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL)
 
   -- Number of weeks per year
-  create_circle(cr, w - x_rel_pos, h - y_rel_pos, 52.0, 2, 3.5, 225, 3,
-                CAIRO_OPERATOR_OVER, 4, tonumber(os.date("%V")), '')
+  create_circle(cr, width, height, 52.0, 2, 3.5, 225 * scale, 3 * scale,
+                CAIRO_OPERATOR_OVER, 4 * scale, tonumber(os.date("%V")), '')
 
   -- Number of days in the current month
-  create_circle(cr, w - x_rel_pos, h - y_rel_pos, days_in_current_month(), 2, 3.5, 200, 13,
-                CAIRO_OPERATOR_CLEAR, -4.5, tonumber(os.date("%d")), '')
+  create_circle(cr, width, height, days_in_current_month(), 2, 3.5, 200 * scale, 13 * scale,
+                CAIRO_OPERATOR_CLEAR, -4.5 * scale, tonumber(os.date("%d")), '')
 
   -- Days
   local days = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
-  create_circle(cr, w - x_rel_pos, h - y_rel_pos, 7, 2, 3.5, 150, 13,
-                CAIRO_OPERATOR_CLEAR, -4, tonumber(os.date("%u")), days, 8.5)
+  create_circle(cr, width, height, 7, 2, 3.5, 150 * scale, 13 * scale,
+                CAIRO_OPERATOR_CLEAR, -4 * scale, tonumber(os.date("%u")), days, 8.5)
 
   -- Month
   local months = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
-  create_circle(cr, w - x_rel_pos, h - y_rel_pos, 12, 2, 3.5, 175, 13,
-                CAIRO_OPERATOR_CLEAR, -4, tonumber(os.date("%m")), months, 5.5)
+  create_circle(cr, width, height, 12, 2, 3.5, 175 * scale, 13 * scale,
+                CAIRO_OPERATOR_CLEAR, -4 * scale, tonumber(os.date("%m")), months, 5.5)
 
   -- Clock
-  cairo_set_font_size(cr, 42)
-  cairo_move_to(cr, center_x - 54, center_y)
-  cairo_show_text(cr, os.date("%H:%M"))
-  cairo_set_font_size(cr, 12)
+  cairo_set_font_size(cr, 42 * scale)
+  local clock = os.date("%H:%M")
+  local clock_size = measure(cr, clock)
+  cairo_move_to(cr, center_x - clock_size.width / 2 - clock_size.x_bearing, center_y)
+  cairo_show_text(cr, clock)
+  cairo_set_font_size(cr, 12 * scale)
 
   -- Free space
   cairo_set_operator(cr, CAIRO_OPERATOR_OVER)
 
-  local drives = {{name = "R", path = "/", x = center_x - 60},
-                  {name = "H", path = "/home", x = center_x + 60}}
+  local drives = {{name = "R", path = "/", x = center_x - 60 * scale},
+                  {name = "H", path = "/home", x = center_x + 60 * scale}}
 
   for _, drive in ipairs(drives) do
     local used_perc = 100 - number_or(conky_parse("${fs_free_perc " .. drive.path .. "}"), 0)
-    create_circle_hdd(cr, drive.x, center_y - 80, 20, 3, 20, 3, used_perc)
-    labelled_dot(cr, drive.x, center_y - 80, 14, drive.name, -4, 5)
+    create_circle_hdd(cr, drive.x, center_y - 80 * scale, 20, 3, 20 * scale, 3 * scale, used_perc)
+    labelled_dot(cr, drive.x, center_y - 80 * scale, 14 * scale, drive.name)
   end
 
   -- Temperatures
-  for i = 1, count do
-    local x = center_x - ((15 * count) + 15 * (count - 1)) / 2 + 30 * (i - 1)
-
-    if show_gpu and i == count then
-      vertical_bars(cr, x, h - y_rel_pos, 75, gpu_temperature())
-      labelled_dot(cr, x + 8, center_y + 90, 7, "G", -5, 4)
-    else
-      vertical_bars(cr, x, h - y_rel_pos, 75, cpu_temperature(i))
-      labelled_dot(cr, x + 8, center_y + 90, 7, tostring(i - 1), -3, 4)
-    end
-  end
+  draw_gauges(cr, center_x, center_y, gauge_scale, count)
 end
 
 function conky_start_widgets()
