@@ -1,79 +1,34 @@
 -- 2014-02-24 by eXpander
 
-
 ---------------- USER CONFIGURATION ----------------
--- Set your number of physical cores to show temperatures of each.
-number_of_physical_CPU_cores = 4      
 
--- Your GPU model. Only NVIDIA cards with NVIDIA proprietary drivers are official supported. Issue nvidia-smi to find your model!			    
-graphic_card_model = "Type Your Model Here"
+-- How many CPU cores to show a temperature bar for; 0 means every sensor the
+-- kernel publishes. Bars are filled from the cores actually reported, in order,
+-- however they happen to be numbered -- a hybrid CPU labels them 0, 4, 8, ...
+-- rather than 0, 1, 2, 3. There is one sensor per physical core, so this is
+-- normally fewer than the thread count htop shows, and asking for more than
+-- exist simply draws the ones that do.
+number_of_physical_CPU_cores = 0
 
 -- Show graphic card temperature? (Yes/No)
-enable_graphic_card_temperature_sensor= "No" 
+-- Read from the amdgpu, nvidia or radeon hwmon entry, falling back to
+-- "nvidia-smi" only when the driver publishes no sensor.
+enable_graphic_card_temperature_sensor = "No"
+
+-- Temperature a full bar represents, in degrees Celsius.
+max_temperature = 70
 
 -- Colors
 HTML_colors = "#000000"
 HTML_colors_current = "#FFFFFF"
-transparency = 0.25 -- From 0 to 1
+transparency = 0.5 -- From 0 to 1
 
--- Scaled relative position from middle. Positive x and y means left and up, negative x and y means right and down.
+-- Scaled relative position from middle. Positive x and y means left and up,
+-- negative x and y means right and down.
 x_rel_pos = 0
 y_rel_pos = 0
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+---------------- DON'T EDIT BELOW IF YOU DO NOT KNOW WHAT YOU ARE DOING ----------------
 
 require 'cairo'
 -- Conky moved cairo_xlib_surface_create into its own module; older builds
@@ -92,241 +47,320 @@ local function conky_window_surface()
                                    conky_window.height), true
 end
 
-function hex2rgb(hex)
-  hex = hex:gsub("#","")
-  return tonumber("0x"..hex:sub(1,2)), tonumber("0x"..hex:sub(3,4)), tonumber("0x"..hex:sub(5,6))
+local show_gpu = tostring(enable_graphic_card_temperature_sensor):lower() == "yes"
+
+
+local function hex2rgb(hex)
+  hex = hex:gsub("#", "")
+  return tonumber("0x" .. hex:sub(1, 2)) / 255,
+         tonumber("0x" .. hex:sub(3, 4)) / 255,
+         tonumber("0x" .. hex:sub(5, 6)) / 255
 end
 
-r,g,b = hex2rgb(HTML_colors)
-r_c,g_c,b_c = hex2rgb(HTML_colors_current)
+local r, g, b = hex2rgb(HTML_colors)
+local r_c, g_c, b_c = hex2rgb(HTML_colors_current)
 
-r = r/255
-g = g/255
-b = b/255
-
-r_c = r_c/255
-g_c = g_c/255
-b_c = b_c/255
-
-if enable_graphic_card_temperature_sensor == "Yes" then
-  number_of_physical_CPU_cores = number_of_physical_CPU_cores + 1
+-- Conky yields an empty string for a sensor or mount point that is not there.
+-- Without this, one missing reading would abort the whole draw and the widget
+-- would simply vanish.
+local function number_or(value, default)
+  return tonumber(value) or default
 end
 
+-- lm-sensors only formats what the kernel already exposes under /sys/class/hwmon,
+-- so read that directly instead of spawning sensors|grep|awk|tr per core per
+-- redraw. Lua has no directory listing in its standard library, hence probing
+-- fixed index ranges rather than globbing.
+local HWMON = "/sys/class/hwmon/hwmon"
 
-function create_circle_hdd(cr,w,h,elements,distance_between_blocks, radius, line_width, current)
+local function read_first_line(path)
+  local file = io.open(path, "r")
+  if not file then return nil end
+  local line = file:read("*l")
+  file:close()
+  return line
+end
+
+-- hwmon reports temperatures in millidegrees Celsius.
+local function read_temperature(path)
+  return number_or(read_first_line(path), 0) / 1000
+end
+
+-- Core labels are not contiguous: a hybrid Intel part numbers its cores
+-- 0, 4, 8, ... 28 and then 32..47, and AMD labels chiplets Tccd1, Tccd2.
+-- Collect whatever the chip actually reports and order it by that number.
+local function scan_hwmon()
+  local cores, gpu = {}, nil
+
+  for chip = 0, 31 do
+    local dir = HWMON .. chip .. "/"
+    local name = read_first_line(dir .. "name")
+
+    if name == "coretemp" or name == "k10temp" or name == "zenpower" then
+      for index = 1, 99 do
+        local label = read_first_line(dir .. "temp" .. index .. "_label")
+        local number = label and (label:match("^Core (%d+)$") or label:match("^Tccd(%d+)$"))
+        if number then
+          cores[#cores + 1] = {order = tonumber(number), path = dir .. "temp" .. index .. "_input"}
+        end
+      end
+    elseif gpu == nil and (name == "amdgpu" or name == "nvidia" or name == "radeon") then
+      for index = 1, 99 do
+        local label = read_first_line(dir .. "temp" .. index .. "_label")
+        local path = dir .. "temp" .. index .. "_input"
+        if (label == nil or label == "edge" or label == "junction") and read_first_line(path) then
+          gpu = path
+          break
+        end
+      end
+    end
+  end
+
+  table.sort(cores, function(x, y) return x.order < y.order end)
+
+  local paths = {}
+  for i, core in ipairs(cores) do paths[i] = core.path end
+  return paths, gpu
+end
+
+local cpu_sensors, gpu_sensor
+local next_scan = 0
+
+-- Conky may start before the sensor modules are up, so retry a failed scan
+-- occasionally rather than reporting zero forever.
+local function ensure_sensors()
+  if cpu_sensors and #cpu_sensors > 0 then return end
+  local now = os.time()
+  if now < next_scan then return end
+  next_scan = now + 30
+  cpu_sensors, gpu_sensor = scan_hwmon()
+end
+
+-- position is 1-based over the cores that exist, not a kernel core number.
+local function cpu_temperature(position)
+  ensure_sensors()
+  local path = cpu_sensors and cpu_sensors[position]
+  if not path then return 0 end
+  return read_temperature(path)
+end
+
+local function gpu_temperature()
+  ensure_sensors()
+  if gpu_sensor then return read_temperature(gpu_sensor) end
+  -- Some NVIDIA setups expose no hwmon entry; fall back to the driver's tool.
+  return number_or(conky_parse(
+    "${exec nvidia-smi --query-gpu=temperature.gpu --format=csv,noheader,nounits | head -n 1}"), 0)
+end
+
+-- Day 0 of next month is the last day of this one.
+local function days_in_current_month()
+  local now = os.date("*t")
+  return os.date("*t", os.time({year = now.year, month = now.month + 1, day = 0, hour = 12})).day
+end
+
+-- Ring of separate arc segments centred on (w, h), used for the disk gauges.
+-- Segments up to "current" percent are drawn in the highlight color.
+local function create_circle_hdd(cr, w, h, elements, distance_between_blocks, radius, line_width, current)
   cairo_set_line_width(cr, line_width)
-  cairo_set_source_rgba(cr, r,g,b,transparency)
+  cairo_set_source_rgba(cr, r, g, b, transparency)
   cairo_new_path(cr)
-  local number_of_arcs = (360 - (elements*distance_between_blocks)) / elements
-  local start_angel = 270
+
+  local number_of_arcs = (360 - (elements * distance_between_blocks)) / elements
+  local start_angle = 270
   local percent_per_element = 100.0 / elements
   local charged_elements = current / percent_per_element
-  
-  for i=1, elements do
+
+  for i = 1, elements do
     if charged_elements >= i then
-      cairo_set_source_rgba(cr, r_c,g_c,b_c,transparency)
+      cairo_set_source_rgba(cr, r_c, g_c, b_c, transparency)
     end
-    cairo_arc(cr, w,h,radius,start_angel*math.pi/180,(start_angel+number_of_arcs)*math.pi/180)
+    cairo_arc(cr, w, h, radius, start_angle * math.pi / 180, (start_angle + number_of_arcs) * math.pi / 180)
     cairo_stroke(cr)
-    start_angel = start_angel+number_of_arcs+distance_between_blocks
-    cairo_set_source_rgba(cr, r,g,b,transparency)
-  end   
-end
-function create_circle(cr,w,h, elements, distance_between_blocks, two_number_degree, radius, line_width, operator, radius_shift_for_text, current, days, shift_days_distance)
-  cairo_set_line_width(cr, line_width)
-  cairo_set_source_rgba(cr, r,g,b,transparency)
-  cairo_new_path(cr)
-  local number_of_arcs = (360 - (elements*distance_between_blocks)) / elements
-  local start_angel = 270
-  
-  for i=1, elements do
-    if i == current then
-      cairo_set_source_rgba(cr, r_c,g_c,b_c,transparency)
-    end
-    cairo_arc(cr, w/2, h/2, radius, start_angel*math.pi/180, (start_angel+number_of_arcs)*math.pi/180)
-    cairo_stroke(cr)
-    start_angel = start_angel+number_of_arcs+distance_between_blocks
-    cairo_set_source_rgba(cr, r,g,b,transparency)
-  end 
-  
-  start_angel = 270
-  cairo_set_operator(cr, operator)
-  
-  for i=1, elements do
-    if i == current then
-      cairo_set_source_rgba(cr, r_c,g_c,b_c,transparency)
-    end
-    if string.len(tostring(i)) == 2 and days == "" then
-      cairo_move_to(cr,w/2+((radius+radius_shift_for_text)*math.cos((start_angel+(((number_of_arcs-two_number_degree)/2)))*(math.pi/180.0))),h/2+((radius+radius_shift_for_text)*math.sin((start_angel+(((number_of_arcs-two_number_degree)/2)))*(math.pi/180.0))))
-      cairo_rotate(cr, (((number_of_arcs-two_number_degree)/2)+(number_of_arcs+distance_between_blocks)*(i-1))*math.pi/180.0)
-      cairo_show_text(cr,tostring(i))
-      cairo_rotate(cr,-(((number_of_arcs-two_number_degree)/2)+(number_of_arcs+distance_between_blocks)*(i-1))*math.pi/180.0)
-    elseif days ~= "" then
-      cairo_move_to(cr,w/2+((radius+radius_shift_for_text)*math.cos((start_angel+((math.abs((number_of_arcs-shift_days_distance))/2)))*(math.pi/180.0))),h/2+((radius+radius_shift_for_text)*math.sin((start_angel+((math.abs((number_of_arcs-shift_days_distance))/2)))*(math.pi/180.0))))
-      cairo_rotate(cr, ((math.abs((number_of_arcs-shift_days_distance))/2)+(number_of_arcs+distance_between_blocks)*(i-1)+4)*math.pi/180.0)
-      cairo_show_text(cr,days[i])
-      cairo_rotate(cr,-((math.abs((number_of_arcs-shift_days_distance))/2)+(number_of_arcs+distance_between_blocks)*(i-1)+4)*math.pi/180.0)      
-    elseif string.len(tostring(i)) == 1 and days == "" then
-      cairo_move_to(cr,w/2+((radius+radius_shift_for_text)*math.cos((start_angel+(((number_of_arcs-distance_between_blocks)/2)))*(math.pi/180.0))),h/2+((radius+radius_shift_for_text)*math.sin((start_angel+(((number_of_arcs-distance_between_blocks)/2)))*(math.pi/180.0))))
-      cairo_rotate(cr, (((number_of_arcs-distance_between_blocks)/2)+(number_of_arcs+distance_between_blocks)*(i-1))*math.pi/180.0)
-      cairo_show_text(cr,tostring(i))
-      cairo_rotate(cr,-(((number_of_arcs-distance_between_blocks)/2)+(number_of_arcs+distance_between_blocks)*(i-1))*math.pi/180.0)
-    end
-    
-    start_angel = start_angel+number_of_arcs+distance_between_blocks 
-    cairo_set_source_rgba(cr, r,g,b,transparency)
+    start_angle = start_angle + number_of_arcs + distance_between_blocks
+    cairo_set_source_rgba(cr, r, g, b, transparency)
   end
+end
+
+-- Ring of arc segments centred on (w/2, h/2), each carrying a rotated label.
+-- The segment matching "current" is highlighted.
+--   days     -- table of labels, or '' to label each segment with its index
+--   operator -- cairo operator used while drawing the labels
+local function create_circle(cr, w, h, elements, distance_between_blocks, two_number_degree,
+                             radius, line_width, operator, radius_shift_for_text, current,
+                             days, shift_days_distance)
+  cairo_set_line_width(cr, line_width)
+  cairo_set_source_rgba(cr, r, g, b, transparency)
+  cairo_new_path(cr)
+
+  local number_of_arcs = (360 - (elements * distance_between_blocks)) / elements
+  local start_angle = 270
+
+  -- Segments
+  for i = 1, elements do
+    if i == current then
+      cairo_set_source_rgba(cr, r_c, g_c, b_c, transparency)
+    end
+    cairo_arc(cr, w / 2, h / 2, radius, start_angle * math.pi / 180, (start_angle + number_of_arcs) * math.pi / 180)
+    cairo_stroke(cr)
+    start_angle = start_angle + number_of_arcs + distance_between_blocks
+    cairo_set_source_rgba(cr, r, g, b, transparency)
+  end
+
+  -- Labels
+  start_angle = 270
+  cairo_set_operator(cr, operator)
+
+  local text_radius = radius + radius_shift_for_text
+  local has_labels = days ~= ""
+
+  for i = 1, elements do
+    if i == current then
+      cairo_set_source_rgba(cr, r_c, g_c, b_c, transparency)
+    end
+
+    local label
+    if has_labels then label = days[i] else label = tostring(i) end
+
+    -- Wider labels start further into their segment so they stay centred.
+    local text_offset, extra_rotation
+    if has_labels then
+      text_offset = math.abs(number_of_arcs - shift_days_distance) / 2
+      extra_rotation = 4
+    elseif #label == 2 then
+      text_offset = (number_of_arcs - two_number_degree) / 2
+      extra_rotation = 0
+    elseif #label == 1 then
+      text_offset = (number_of_arcs - distance_between_blocks) / 2
+      extra_rotation = 0
+    end
+
+    if text_offset then
+      local text_angle = (start_angle + text_offset) * (math.pi / 180.0)
+      local rotation = (text_offset + (number_of_arcs + distance_between_blocks) * (i - 1) + extra_rotation) * math.pi / 180.0
+
+      cairo_move_to(cr, w / 2 + (text_radius * math.cos(text_angle)),
+                        h / 2 + (text_radius * math.sin(text_angle)))
+      cairo_rotate(cr, rotation)
+      cairo_show_text(cr, label)
+      cairo_rotate(cr, -rotation)
+    end
+
+    start_angle = start_angle + number_of_arcs + distance_between_blocks
+    cairo_set_source_rgba(cr, r, g, b, transparency)
+  end
+
   cairo_close_path(cr)
   cairo_set_operator(cr, CAIRO_OPERATOR_OVER)
 end
 
+-- How many gauges to draw: one per core we actually have a sensor for, plus
+-- one for the GPU when it is enabled.
+local function gauge_count()
+  ensure_sensors()
+  local available = #(cpu_sensors or {})
+  local wanted = number_of_physical_CPU_cores
+  if wanted <= 0 then wanted = available end
+  return math.min(wanted, available) + (show_gpu and 1 or 0)
+end
 
-function vertical_bars(cr,w,h,x,y,conky_value)
-    cairo_set_source_rgba(cr, r,g,b,transparency)
-    local percent_per_block = 70 / 10
-    local number_of_filled_blocks = math.floor((conky_value/percent_per_block)+0.5)
-    
-    for i=1,10 do
-      if number_of_filled_blocks >= i then
-	cairo_set_source_rgba(cr, r_c,g_c,b_c,transparency)
-      end
-      --cairo_rectangle(cr, w/2-x, h/2+y-i*5,15,3)
-      cairo_rectangle(cr, w, h/2+y-i*5,15,3)
-      cairo_fill(cr)
-      cairo_set_source_rgba(cr, r,g,b,transparency)
+-- Column of ten blocks growing upwards from (x, height/2 + y_offset). Blocks are
+-- highlighted in proportion to temperature, a full column meaning max_temperature.
+local function vertical_bars(cr, x, height, y_offset, temperature)
+  cairo_set_source_rgba(cr, r, g, b, transparency)
+
+  local degrees_per_block = max_temperature / 10
+  local filled_blocks = math.floor((temperature / degrees_per_block) + 0.5)
+
+  for i = 1, 10 do
+    if filled_blocks >= i then
+      cairo_set_source_rgba(cr, r_c, g_c, b_c, transparency)
     end
-  
+    cairo_rectangle(cr, x, height / 2 + y_offset - i * 5, 15, 3)
+    cairo_fill(cr)
+    cairo_set_source_rgba(cr, r, g, b, transparency)
+  end
 end
 
-function draw_circles(cr, x_start,y_start,radius, angle_1, angle_2, free_perc, angle_step)
-	 cairo_select_font_face (cr, "Dejavu Sans Condensed", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-	 local number_of_circles = 360 / angle_step
-	 local angle_start = 90
-	 cairo_set_line_width(cr, 1)
-	 local percent_per_circle = 100.0 / number_of_circles
-	 local number_of_nonfree_circles = math.floor(((100.0 - tonumber(free_perc)) / percent_per_circle)+0.5)
-	 cairo_set_source_rgba(cr, r,g,b,transparency)
-	 
-	for i=1,number_of_circles do
-	  cairo_arc(cr,x_start+(radius*math.cos(angle_start*(math.pi/180.0))),y_start-(radius+5)+radius-(radius*math.sin(angle_start*(math.pi/180.0))),2,angle1,angle2)
-	  if i <= number_of_nonfree_circles then
-	    cairo_set_source_rgba(cr, r_c,g_c,b_c,transparency)
-	    cairo_fill(cr)
-	  else
-	    cairo_set_source_rgba(cr, r,g,b,transparency)
-	    cairo_fill(cr)
-	  end
-	  angle_start = angle_start - angle_step
-	end
-	cairo_set_source_rgba(cr, r,g,b,transparency)
-	
-end
-
-function draw_function(cr)
-  local w,h=conky_window.width,conky_window.height	
-  cairo_set_line_width(cr, 3)
-  cairo_set_font_size(cr,12)
-  cairo_select_font_face (cr, "Dejavu Sans Condensed", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL);
-  
--- Number of weeks per year --- 
-  create_circle(cr,w-x_rel_pos,h-y_rel_pos, 52.0, 2, 3.5, 225, 3, CAIRO_OPERATOR_OVER, 4, tonumber(conky_parse('${exec date +%V}')), '')
-  
--- Number of days in a month ---
-  create_circle(cr,w-x_rel_pos,h-y_rel_pos, conky_parse('${exec cal |egrep -v [a-z] |wc -w}'), 2, 3.5, 200, 13,CAIRO_OPERATOR_CLEAR, -4.5,tonumber(conky_parse('${exec date +%d}')), '')
-  
---- Days ---
--- function create_circle(cr,w,h, elements, distance_between_blocks, two_number_degree, radius, line_width, operator, radius_shift_for_text, current, days, shift_days_distance)
- 
-  local days = {"Mon", "Tue", "Wed","Thu", "Fri", "Sat", "Sun"}
-  create_circle(cr,w-x_rel_pos,h-y_rel_pos, 7, 2, 3.5, 150, 13, CAIRO_OPERATOR_CLEAR, -4, tonumber(conky_parse('${exec date +%u}')), days, 8.5)
-  
---- Month ---
-  
-  local month = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
-  create_circle(cr,w-x_rel_pos,h-y_rel_pos, 12, 2, 3.5, 175, 13, CAIRO_OPERATOR_CLEAR, -4, tonumber(conky_parse('${exec date +%m}')), month, 5.5)
-  
-  
---- Clock ---
-  cairo_set_font_size(cr,42)
-  cairo_move_to(cr, (w-x_rel_pos)/2-54,(h-y_rel_pos)/2)
-  cairo_show_text(cr,conky_parse('${exec date +%H}') .. ":" .. conky_parse('${exec date +%M}'))
-  cairo_set_font_size(cr,12)
-  cairo_move_to(cr, (w-x_rel_pos)/2-24,(h-y_rel_pos)/2+14)
-  cairo_show_text(cr, "")
-  
-
---- Free space ---
-  cairo_set_operator(cr, CAIRO_OPERATOR_OVER)
-  angle1 = 0.0  * (math.pi/180.0);  
-  angle2 = 360.0 * (math.pi/180.0);
-  
-  create_circle_hdd(cr,(w-x_rel_pos)/2-60,(h-y_rel_pos)/2-80,20,3, 20, 3, 100-tonumber(conky_parse("${fs_free_perc /}")))
-  create_circle_hdd(cr,(w-x_rel_pos)/2+60,(h-y_rel_pos)/2-80,20,3, 20, 3,100-tonumber(conky_parse("${fs_free_perc /home}")))
-  
-
-  cairo_arc(cr,(w-x_rel_pos)/2-60,(h-y_rel_pos)/2-80,14,0,2*math.pi)
+-- Filled disc with a single character knocked out of it.
+local function labelled_dot(cr, x, y, radius, label, shift_x, shift_y)
+  cairo_arc(cr, x, y, radius, 0, 2 * math.pi)
   cairo_fill(cr)
-  cairo_arc(cr,(w-x_rel_pos)/2+60,(h-y_rel_pos)/2-80,14,0,2*math.pi)
-  cairo_fill(cr)
-  
   cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR)
-  cairo_move_to(cr, (w-x_rel_pos)/2-64, (h-y_rel_pos)/2-75)
-  cairo_show_text(cr,"R")
-  cairo_move_to(cr, (w-x_rel_pos)/2+56, (h-y_rel_pos)/2-75)
-  cairo_show_text(cr,"H")
+  cairo_move_to(cr, x + shift_x, y + shift_y)
+  cairo_show_text(cr, label)
   cairo_set_operator(cr, CAIRO_OPERATOR_OVER)
-  
---- Temperatures ---
+end
 
-  cairo_move_to(cr,(w-x_rel_pos)/2-50,(h-y_rel_pos)/2+100)
-  cairo_set_font_size(cr,12)
+local function draw_function(cr)
+  local w, h = conky_window.width, conky_window.height
+  local center_x, center_y = (w - x_rel_pos) / 2, (h - y_rel_pos) / 2
+  local count = gauge_count()
 
-  for i=1, number_of_physical_CPU_cores do
-    x = (w-x_rel_pos)/2-((15*number_of_physical_CPU_cores)+15*(number_of_physical_CPU_cores-1))/2+30*(i-1)
-    
-    if enable_graphic_card_temperature_sensor == "Yes" and i == number_of_physical_CPU_cores then
-      str= tonumber(conky_parse("${exec nvidia-smi | grep '" .. graphic_card_model .. "' -A 1 | tail -n 1 | awk '{print $3}' | cut -b1,2}"))
-      vertical_bars(cr,x,h-y_rel_pos,64,75,str)
-      cairo_arc(cr,x+8,(h-y_rel_pos)/2+90,7,0,2*math.pi)
-      cairo_fill(cr)
-      cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR)
-      cairo_move_to(cr,x+3,(h-y_rel_pos)/2+94)
-      cairo_show_text(cr,"G")
-      cairo_set_operator(cr, CAIRO_OPERATOR_OVER)
+  cairo_set_line_width(cr, 3)
+  cairo_set_font_size(cr, 12)
+  cairo_select_font_face(cr, "Dejavu Sans Condensed", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_NORMAL)
+
+  -- Number of weeks per year
+  create_circle(cr, w - x_rel_pos, h - y_rel_pos, 52.0, 2, 3.5, 225, 3,
+                CAIRO_OPERATOR_OVER, 4, tonumber(os.date("%V")), '')
+
+  -- Number of days in the current month
+  create_circle(cr, w - x_rel_pos, h - y_rel_pos, days_in_current_month(), 2, 3.5, 200, 13,
+                CAIRO_OPERATOR_CLEAR, -4.5, tonumber(os.date("%d")), '')
+
+  -- Days
+  local days = {"Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"}
+  create_circle(cr, w - x_rel_pos, h - y_rel_pos, 7, 2, 3.5, 150, 13,
+                CAIRO_OPERATOR_CLEAR, -4, tonumber(os.date("%u")), days, 8.5)
+
+  -- Month
+  local months = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
+  create_circle(cr, w - x_rel_pos, h - y_rel_pos, 12, 2, 3.5, 175, 13,
+                CAIRO_OPERATOR_CLEAR, -4, tonumber(os.date("%m")), months, 5.5)
+
+  -- Clock
+  cairo_set_font_size(cr, 42)
+  cairo_move_to(cr, center_x - 54, center_y)
+  cairo_show_text(cr, os.date("%H:%M"))
+  cairo_set_font_size(cr, 12)
+
+  -- Free space
+  cairo_set_operator(cr, CAIRO_OPERATOR_OVER)
+
+  local drives = {{name = "R", path = "/", x = center_x - 60},
+                  {name = "H", path = "/home", x = center_x + 60}}
+
+  for _, drive in ipairs(drives) do
+    local used_perc = 100 - number_or(conky_parse("${fs_free_perc " .. drive.path .. "}"), 0)
+    create_circle_hdd(cr, drive.x, center_y - 80, 20, 3, 20, 3, used_perc)
+    labelled_dot(cr, drive.x, center_y - 80, 14, drive.name, -4, 5)
+  end
+
+  -- Temperatures
+  for i = 1, count do
+    local x = center_x - ((15 * count) + 15 * (count - 1)) / 2 + 30 * (i - 1)
+
+    if show_gpu and i == count then
+      vertical_bars(cr, x, h - y_rel_pos, 75, gpu_temperature())
+      labelled_dot(cr, x + 8, center_y + 90, 7, "G", -5, 4)
     else
-      str = "${exec sensors|grep 'Core " .. tostring(i-1) .. ":'|awk '{print $3}'| cut -b2,3,4,5}"
-      vertical_bars(cr,x,h-y_rel_pos,64,75,tonumber(conky_parse(str)))
-      cairo_arc(cr,x+8,(h-y_rel_pos)/2+90,7,0,2*math.pi)
-      cairo_fill(cr)
-      cairo_set_operator(cr, CAIRO_OPERATOR_CLEAR)
-      cairo_move_to(cr,x+5,(h-y_rel_pos)/2+94)
-      cairo_show_text(cr,tostring(i-1))
-      cairo_set_operator(cr, CAIRO_OPERATOR_OVER)
+      vertical_bars(cr, x, h - y_rel_pos, 75, cpu_temperature(i))
+      labelled_dot(cr, x + 8, center_y + 90, 7, tostring(i - 1), -3, 4)
     end
-    
   end
 end
 
 function conky_start_widgets()
-	local function draw_conky_function(cr)
-		local str=''
-		local value=0		
-		draw_function(cr)
-	end
-	
-	-- Check that Conky has been running for at least 5s
+  if conky_window == nil then return end
 
-	if conky_window==nil then return end
-	local cs, owns_surface = conky_window_surface()
-	
-	local cr=cairo_create(cs)	
-	
-	local updates=conky_parse('${updates}')
-	update_num=tonumber(updates)
-	
-	if update_num>5 then
-		draw_conky_function(cr)
-	end
-	cairo_destroy(cr)
-	if owns_surface then cairo_surface_destroy(cs) end
+  local cs, owns_surface = conky_window_surface()
+  local cr = cairo_create(cs)
+
+  -- Check that Conky has been running for at least 5s
+  if number_or(conky_parse('${updates}'), 0) > 5 then
+    draw_function(cr)
+  end
+
+  cairo_destroy(cr)
+  if owns_surface then cairo_surface_destroy(cs) end
 end
