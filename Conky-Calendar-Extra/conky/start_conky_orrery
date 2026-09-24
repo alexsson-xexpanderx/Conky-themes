@@ -1,0 +1,61 @@
+-- Size of the conky window in pixels. The widget centres itself in here and
+-- scales down if it does not fit, so raise this if lua_orrery.lua logs that it
+-- wanted more room. It must be at least `widget_size` from lua_orrery.lua.
+local size = 820
+
+-- Frames per second. This is the one that actually sets the rate; keep
+-- `target_fps` at the top of lua_orrery.lua in step with it.
+--
+-- The whole frame is redrawn every tick, so this is also the knob that decides
+-- what the widget costs. 20 is smooth and cheap; 30 is smoother and about half
+-- again as expensive; 10 still animates perfectly well and is the right choice
+-- on a laptop running off the battery.
+local fps = 20
+
+conky.config = {
+	background = false,
+	update_interval = 1 / fps,
+
+	override_utf8_locale = true,
+
+	-- Not optional here. Without it every frame is composited straight onto
+	-- the window and the animation tears.
+	double_buffer = true,
+	no_buffers = true,
+
+	text_buffer_size = 2048,
+	imlib_cache_size = 0,
+
+	own_window = true,
+	own_window_type = 'normal',
+	own_window_colour = '#00000000',
+	own_window_hints = 'undecorated,below,sticky,skip_taskbar,skip_pager',
+
+	border_inner_margin = 0,
+	border_outer_margin = 0,
+
+	minimum_width = size, minimum_height = size,
+
+	alignment = 'middle_middle',
+	gap_x = 0,
+	gap_y = 0,
+
+	draw_shades = false,
+	draw_outline = false,
+	draw_borders = false,
+	draw_graph_borders = false,
+
+	use_xft = true,
+	font = 'DejaVu Sans:size=8',
+	xftalpha = 1,
+
+	uppercase = false,
+
+	default_color = '#FFFFFF',
+
+	lua_load = 'lua_orrery.lua',
+	lua_draw_hook_pre = 'start_widgets',
+};
+
+-- Everything is drawn by cairo from Lua; conky's own text engine draws nothing.
+conky.text = [[]];

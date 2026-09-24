@@ -10,7 +10,8 @@ cairo, installed by copying files into `~/.conky/`.
 
 - `Conky-Weather/` — OpenWeatherMap temperature + icon (Lua + a Python helper)
 - `Conky-Revisited-2/` — battery/disk/CPU/RAM panel, in four layout variants
-- `Conky-Calendar-Extra/` — circular calendar/clock + per-core CPU temperatures
+- `Conky-Calendar-Extra/` — circular calendar/clock + per-core CPU temperatures, in three
+  looks, one of which is an animated software-3D renderer
 
 The top-level `README.md` also advertises two themes that live in *other* repositories
 (`conky-drawer-interactive`, `conky-pywal`) — they are not in this tree.
@@ -32,10 +33,14 @@ cd Conky-Revisited-2 && sh install.sh && cd ~/.conky/Conky_Revisited_2/Conky_Squ
 cd Conky-Calendar-Extra/conky && conky -c start_conky
 ```
 
+```bash
+cd Conky-Calendar-Extra/conky && conky -c start_conky_orrery
+```
+
 `Conky-Calendar-Extra` has no installer. Its `lua_load` is relative, but conky resolves that
 against the **config file's own directory**, not the working directory — so `conky -c
 /abs/path/start_conky` works from anywhere, while copying the config away from its `.lua` breaks it.
-`start_conky_modernized` is the restyled variant.
+`start_conky_modernized` is the restyled variant and `start_conky_orrery` the animated one.
 
 ## The edit/run gotcha
 
@@ -55,7 +60,23 @@ pkill conky; cd ~/.conky/Conky-Weather && conky -c conky_config
 ```
 
 Conky-Revisited-2 and Conky-Calendar-Extra skip drawing until `${updates} > 5`, so allow a few
-seconds before concluding a change did nothing.
+seconds before concluding a change did nothing. `lua_orrery.lua` waits for `${updates} >
+target_fps` instead, because at its `update_interval` of 1/20s five updates is a quarter of a
+second and conky_window is not ready that early — the threshold has to be written in updates but
+mean about a second.
+
+Do not `pkill conky` on this machine: the user runs their own widgets. Start a test instance,
+note its pid, and kill that pid alone.
+
+The KDE Wayland session here will not let an X11 client grab the screen, so `import`, `xwd` and
+`ffmpeg -f x11grab` all come back blank — a screenshot of a running conky cannot be taken from
+this session. Render instead: drive the script's own `draw_function` against a
+`cairo_image_surface_create` surface with a stub `conky_surface()`, which is also far faster to
+iterate on. For `lua_orrery.lua` the harness additionally has to intercept `io.open` for
+`/proc/uptime` and override `os.time`, since the animation clock comes from those; leaving hwmon
+reads to fall through to the real filesystem gives a render with the machine's real sensor data
+in it. Plain `lua` loads the bindings with `package.cpath = "/usr/lib64/conky/lib?.so"` — note the
+`lib` prefix, since the module is `libcairo.so` rather than `cairo.so`.
 
 ## Architecture
 
@@ -113,12 +134,16 @@ Two breaking changes hit every `settings.lua`/`lua_widgets.lua` in this repo on 
 `conky_window` is nil on the very first draw hook and only becomes a table a few updates in — that
 is what the `if conky_window == nil then return end` guard is for; don't remove it.
 
-### Conky-Calendar-Extra ships two looks
+### Conky-Calendar-Extra ships three looks
 
 `lua_widgets.lua` + `start_conky` is the original dial; `lua_widgets_modernized.lua` +
-`start_conky_modernized` is a restyled copy driven from the same sensor and scaling code (the
+`start_conky_modernized` is a restyled copy; `lua_orrery.lua` + `start_conky_orrery` is an
+animated 3D one. All three are driven from the same sensor and scaling code (the
 `require`/`conky_window_surface`, hwmon and `days_in_current_month` blocks were sliced out of the
-original verbatim, so fixes to those must be applied to both). The modernized one draws positively
+original verbatim, so fixes to those must be applied to all three). There is no shared module and
+cannot easily be one: conky shares a single Lua state across every script it loads, and resolves
+`lua_load` against the config file's directory while `dofile` would resolve against the working
+directory. The modernized one draws positively
 with colour and alpha instead of knocking holes with `CAIRO_OPERATOR_CLEAR`, and anchors the gauge
 block in **ring** units rather than gauge units so it clears the clock and date — which makes the
 fit an implicit equation, solved by the fixed-point iteration in `growth_for` (it converges because
@@ -129,6 +154,89 @@ cairo-drawn icon, readout — so a dial is defined by a fill fraction, a colour 
 by what it measures. Icons (`drive_icon`, `home_icon`, `gpu_icon`) are stroked line art; note they
 build paths under a scaled CTM but **stroke after restoring it**, since stroking while scaled would
 distort the line width.
+
+### lua_orrery.lua renders 3D in software
+
+Conky exposes no 3D and none is used. Points are turned by a row-major 3x3 matrix held as nine
+numbers, divided through by depth (`FOCAL / (FOCAL + z)`) for perspective, and painted back to
+front. Four things about it are load-bearing:
+
+- **Everything is depth-sorted together, text included.** The clock is submitted at depth 0, the
+  plane through the centre of the scene, so the near half of the cage draws over the numerals and
+  the far half behind them. That is the whole visual point of the variant; moving the clock out of
+  the sorted list and drawing it last would throw it away.
+- **The primitive tables are pooled and never freed.** At 20fps and ~1000 primitives a frame,
+  allocating fresh tables would be tens of thousands of allocations a second and the GC pauses
+  show as stutter. `table.sort` has no range form and truncating the list would discard the pool,
+  so the unused tail is parked at `-math.huge`, which sorts past the near end of a descending
+  sort, and the draw loop stops at the live count. The same reasoning applies to the per-body
+  orbital matrices and the cage's projected vertices, which are built once rather than per frame.
+- **Depth fade is per object, not per scene.** `fade_within(vz, reference)` takes the half-depth
+  of the thing being drawn. Fading the 96-unit cage against the 272-unit scene leaves it spanning
+  only the middle of the ramp, so its back comes out nearly as bright as its front and it reads as
+  a solid ball instead of a cage.
+- **Sampling is throttled to 1Hz and eased.** `${cpu}`, `${memperc}` and `${fs_free_perc}` are
+  read once a second, not once a frame, and every frame eases towards the last reading with a
+  framerate-independent exponential (`1 - exp(-dt/tau)`). Reading them per frame would parse
+  twenty `${...}` a second for numbers that do not change that fast.
+
+Animation time comes from `/proc/uptime`, which is the only sub-second wall clock available:
+`os.time()` has one-second resolution and `os.clock()` measures CPU time consumed, so it crawls
+while the widget sits idle. Wall time is uptime plus an offset derived from `os.time()`; since
+that is truncated to the second the offset starts out up to a second wrong and is re-derived
+whenever it drifts past 1.25s, which also covers suspend/resume. `dt` is clamped to 0.25s so a
+frame that arrives late does not teleport anything that integrates over it.
+
+`update_interval` in `start_conky_orrery` is what actually sets the frame rate; `target_fps` in
+`lua_orrery.lua` only supplies the fallback frame duration and the warm-up threshold. Change both
+together. The whole frame is redrawn every tick, so the frame rate is also the cost: 20fps with 24
+bodies and the hoop labels measures ~8% of one core.
+
+Two radii are in tension and were tuned against renders, not by eye. `R_CAGE` has to be larger
+than half the clock's width or the cage sits entirely behind the text and the crossing effect
+disappears; the rest of the radial budget (`R_YEAR` down to `ORBIT_INNER`) is sized outward from
+it. `widget_size` is the outermost hoop, but readout values are written outside it, so the fit
+test measures `CONTENT_DIAMETER`, not `BASE_DIAMETER` — sizing against the latter lets the corner
+text run out of a small window.
+
+Three of the four hoops carry the date as labels (months, day numbers, weekdays) and the middle
+holds only the clock, so the labels are the readout and two rules keep them legible. Where a hoop
+turns edge-on its divisions crowd into a knot, so a label fades by how much room its neighbour
+leaves it; and no label may be drawn within `CLOCK_KEEPOUT` of the middle, or a steeply tilted
+hoop writes across the clock. The live label is exempt from both — it is *pushed* out of the
+keep-out along its own direction from the centre rather than faded — because fading it would mean
+that every time a hoop came edge-on, the one thing worth reading off it disappeared. Label
+tangents come from the neighbours either side rather than a second projected sample: every anchor
+is projected already, so it is free and steadier over two divisions than over a short chord.
+
+Label sizes change every frame with perspective, so `cairo_text_extents` is called once per string
+at `REFERENCE_SIZE` and the result scaled (`extent_for`). Measuring per label per frame is around
+a thousand calls a second for a set of strings that never changes. Hinting makes the scaling very
+slightly non-linear, which is a fraction of a pixel on centred text.
+
+**Today's date is the only thing on a hoop drawn in the accent colour**, and the reading is the
+label itself, lit from behind with `put_glow`. Two other ways of marking it were tried and both
+read as bugs to the user. A glowing bead riding the hoop is indistinguishable from an orbiting
+body a few pixels away — in this widget a round glowing dot is a CPU core and nothing else.
+Brighter ticks bounding the live division read as two stray dashes floating near the text, because
+the ticks are on the hoop while the label is written outside it and half a division round; a
+longer tick marking the hoop's zero went the same way. So every tick is identical and every other
+label is the same dim grey. Only the seconds hoop, which carries no labels and is the one thing
+that moves between frames, keeps a travelling head. Do not add a second lit thing to a labelled
+hoop.
+
+Labels sit at division *centres* (`(i - 0.5) * TAU / count`) and the live mark snaps to the centre
+of the division the value falls in, rather than tracking the value continuously. A label names the
+sector after its tick, so a continuous mark sits almost on FRI by Thursday evening and almost on
+OCT by late September — correct to the hour and wrong to the eye. The continuous value is still
+what is passed in; only its presentation is quantised.
+
+Readout colour encodes kind, not position: accent for live load (CPU, MEM), second for disk use
+(ROOT, HOME), the heat ramp for degrees (GPU). The readouts are spaced evenly from the top from a
+list built at draw time, so dropping the GPU takes the set from five to four and the layout
+follows — do not reintroduce fixed corner angles. Beads use five stacked discs for a halo rather than a cairo gradient, because at up to forty
+beads a frame the pattern allocation is not free; the nucleus is the one thing large enough for
+those steps to show as rings, so it alone uses `put_glow` and a real radial gradient.
 
 ### Conky-Calendar-Extra scales itself
 

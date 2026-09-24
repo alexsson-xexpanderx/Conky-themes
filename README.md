@@ -18,6 +18,10 @@
 
 ![alt tag](Conky-Calendar-Extra/screenshot_modernized.png)
 
+<b>Conky-Calendar-Extra (orrery, animated)</b>
+
+![alt tag](Conky-Calendar-Extra/screenshot_orrery.png)
+
 <b>Conky-Revisited-2</b>
 
 ![alt tag](https://raw.githubusercontent.com/xexpanderx/Conky-themes/master/Conky-Revisited-2/Screenshot.png)
