@@ -1,0 +1,6 @@
+# the colour editor keeps the previous lua_orrery.lua beside it when you Apply
+*.bak
+
+# byte-compiled Python, from importing orrery_colors.py
+__pycache__/
+*.pyc

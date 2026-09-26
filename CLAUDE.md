@@ -4,14 +4,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A collection of three independent Conky desktop-widget themes. There is no build system, package
+A collection of four independent Conky desktop-widget themes. There is no build system, package
 manager, test suite, or linter — each theme is a Conky config plus a Lua script that draws with
 cairo, installed by copying files into `~/.conky/`.
 
 - `Conky-Weather/` — OpenWeatherMap temperature + icon (Lua + a Python helper)
 - `Conky-Revisited-2/` — battery/disk/CPU/RAM panel, in four layout variants
-- `Conky-Calendar-Extra/` — circular calendar/clock + per-core CPU temperatures, in three
-  looks, one of which is an animated software-3D renderer
+- `Conky-Calendar-Extra/` — circular calendar/clock + per-core CPU temperatures, in two looks
+- `Conky_Orrery/` — animated software-3D armillary clock, plus a tkinter colour editor with a
+  live preview. Grew out of Conky-Calendar-Extra and still shares its sensor code; it is the
+  only theme here that is not installed into `~/.conky/` and the only one with a GUI.
 
 The top-level `README.md` also advertises two themes that live in *other* repositories
 (`conky-drawer-interactive`, `conky-pywal`) — they are not in this tree.
@@ -34,13 +36,14 @@ cd Conky-Calendar-Extra/conky && conky -c start_conky
 ```
 
 ```bash
-cd Conky-Calendar-Extra/conky && conky -c start_conky_orrery
+cd Conky_Orrery && conky -c start_conky_orrery
 ```
 
 `Conky-Calendar-Extra` has no installer. Its `lua_load` is relative, but conky resolves that
 against the **config file's own directory**, not the working directory — so `conky -c
 /abs/path/start_conky` works from anywhere, while copying the config away from its `.lua` breaks it.
-`start_conky_modernized` is the restyled variant and `start_conky_orrery` the animated one.
+`start_conky_modernized` is the restyled variant. The same applies to `Conky_Orrery`, whose
+`start_conky_orrery` and `lua_orrery.lua` must stay in the same directory.
 
 ## The edit/run gotcha
 
@@ -72,11 +75,34 @@ The KDE Wayland session here will not let an X11 client grab the screen, so `imp
 `ffmpeg -f x11grab` all come back blank — a screenshot of a running conky cannot be taken from
 this session. Render instead: drive the script's own `draw_function` against a
 `cairo_image_surface_create` surface with a stub `conky_surface()`, which is also far faster to
-iterate on. For `lua_orrery.lua` the harness additionally has to intercept `io.open` for
-`/proc/uptime` and override `os.time`, since the animation clock comes from those; leaving hwmon
-reads to fall through to the real filesystem gives a render with the machine's real sensor data
-in it. Plain `lua` loads the bindings with `package.cpath = "/usr/lib64/conky/lib?.so"` — note the
-`lib` prefix, since the module is `libcairo.so` rather than `cairo.so`.
+iterate on. Plain `lua` loads the bindings with `package.cpath = "/usr/lib64/conky/lib?.so"` —
+note the `lib` prefix, since the module is `libcairo.so` rather than `cairo.so`.
+
+For the orrery that harness is already written and shipped as
+`Conky_Orrery/orrery_preview.lua`; use it rather than rebuilding one:
+
+```bash
+cd Conky_Orrery && lua orrery_preview.lua lua_orrery.lua /tmp/out.png 900 0
+```
+
+It intercepts `io.open` for `/proc/uptime` and overrides `os.time`, because the animation clock
+comes from those and without a synthetic one every frame lands at the same instant and the eased
+readouts never leave zero. hwmon reads are deliberately *not* intercepted, so a render shows the
+machine's real core count and temperatures. It draws 14 settling frames at dt 0.25s before the one
+it keeps — the readouts ease with a 0.45s time constant, and dt is clamped to 0.25s inside the
+widget, so that is the cheapest way to arrive at settled values. It clears the surface between
+those frames, because conky repaints the whole window each tick and without clearing 14 frames of
+glow pile up and the render comes out far brighter than the real thing.
+
+A GUI cannot be screenshotted on the Wayland session either, but unlike conky it can be pointed at
+a virtual X server that *can* be captured — `Xvfb :99 -screen 0 1400x1000x24`, run the program with
+`DISPLAY=:99`, then `ffmpeg -f x11grab -draw_mouse 0`. Without `-draw_mouse 0` the pointer is baked
+into the middle of the grab.
+
+Do not use `pkill -f` to clean up test processes here. The Bash tool wraps each command in a shell
+whose own command line contains the pattern, so `pkill -f 'conky -c start_conky_orrery'` kills the
+wrapper and the call returns 144. Collect pids first (`pgrep -x`, or read `/proc/*/cmdline`) and
+kill those.
 
 ## Architecture
 
@@ -134,16 +160,16 @@ Two breaking changes hit every `settings.lua`/`lua_widgets.lua` in this repo on 
 `conky_window` is nil on the very first draw hook and only becomes a table a few updates in — that
 is what the `if conky_window == nil then return end` guard is for; don't remove it.
 
-### Conky-Calendar-Extra ships three looks
+### Conky-Calendar-Extra ships two looks, and Conky_Orrery is a third descended from them
 
 `lua_widgets.lua` + `start_conky` is the original dial; `lua_widgets_modernized.lua` +
-`start_conky_modernized` is a restyled copy; `lua_orrery.lua` + `start_conky_orrery` is an
-animated 3D one. All three are driven from the same sensor and scaling code (the
-`require`/`conky_window_surface`, hwmon and `days_in_current_month` blocks were sliced out of the
-original verbatim, so fixes to those must be applied to all three). There is no shared module and
-cannot easily be one: conky shares a single Lua state across every script it loads, and resolves
-`lua_load` against the config file's directory while `dofile` would resolve against the working
-directory. The modernized one draws positively
+`start_conky_modernized` is a restyled copy. `Conky_Orrery/lua_orrery.lua` is an animated 3D one
+that started here and now lives in its own top-level folder. All three are driven from the same
+sensor and scaling code (the `require`/`conky_window_surface`, hwmon and `days_in_current_month`
+blocks were sliced out of the original verbatim, so **fixes to those must be applied to all three,
+across two directories**). There is no shared module and cannot easily be one: conky shares a
+single Lua state across every script it loads, and resolves `lua_load` against the config file's
+directory while `dofile` would resolve against the working directory. The modernized one draws positively
 with colour and alpha instead of knocking holes with `CAIRO_OPERATOR_CLEAR`, and anchors the gauge
 block in **ring** units rather than gauge units so it clears the clock and date — which makes the
 fit an implicit equation, solved by the fixed-point iteration in `growth_for` (it converges because
@@ -155,7 +181,7 @@ by what it measures. Icons (`drive_icon`, `home_icon`, `gpu_icon`) are stroked l
 build paths under a scaled CTM but **stroke after restoring it**, since stroking while scaled would
 distort the line width.
 
-### lua_orrery.lua renders 3D in software
+### Conky_Orrery/lua_orrery.lua renders 3D in software
 
 Conky exposes no 3D and none is used. Points are turned by a row-major 3x3 matrix held as nine
 numbers, divided through by depth (`FOCAL / (FOCAL + z)`) for perspective, and painted back to
@@ -237,6 +263,50 @@ list built at draw time, so dropping the GPU takes the set from five to four and
 follows — do not reintroduce fixed corner angles. Beads use five stacked discs for a halo rather than a cairo gradient, because at up to forty
 beads a frame the pattern allocation is not free; the nucleus is the one thing large enough for
 those steps to show as rings, so it alone uses `put_glow` and a real radial gradient.
+
+### The orrery's colour editor
+
+`Conky_Orrery/orrery_colors.py` is a tkinter editor for the four `HTML_*` colours, the four
+`opacity_*` values and `depth_fade`, with a live preview. Standard library only — tkinter ships
+with Python and Tk 8.6 reads PNG unaided, so there is nothing to install and no Pillow dependency
+even though Pillow happens to be present on this machine.
+
+**Almost nothing in it is a ttk widget.** Buttons, sliders, the segmented control, the swatch and
+preset chips and the colour picker are all drawn on `tk.Canvas`, because the stock ttk themes
+cannot be pushed far from their Motif ancestry — `clam`'s scale still draws a hatched grip — and
+the editor sits beside a preview whose whole job is to be looked at. `rounded()` draws a rounded
+rectangle as a `create_polygon` with `smooth=True`, which at these radii is indistinguishable from
+real arcs. Each control redraws itself wholesale on hover, press and value change; at these sizes
+that is far below a frame's worth of work.
+
+The colour picker is a saturation/value square over a hue strip. The square is a `PhotoImage`
+filled a pixel at a time from `colorsys`, which sounds ruinous and is not: 186×186 costs about
+20ms, and it is only rebuilt when the hue moves — dragging within the square just moves the ring.
+`set_hex` deliberately leaves the hue strip alone when the incoming colour has no saturation,
+because a grey has no meaningful hue and snapping the strip to red every time someone picks white
+is worse than remembering where they left it.
+
+The preview is not a reimplementation. Each redraw writes the candidate settings into a throwaway
+copy of `lua_orrery.lua` and renders *that* through `orrery_preview.lua`, so what is on screen is
+byte-for-byte the file Apply is about to write. Keep it that way; a separate drawing path in
+Python would drift from the Lua within a release.
+
+Three details are load-bearing:
+
+- **Unchanged settings are left completely alone**, down to the case of their hex digits.
+  `apply_settings` compares before substituting and returns the original match when the value has
+  not moved, so pressing Apply with nothing changed produces a byte-identical file. Numbers are
+  written `%.2f`, which is how the file is already written and the same width for every value in
+  range, so the comment after each one keeps its column.
+- **Renders run on a worker thread** and results come back through a `queue.Queue` drained by an
+  `after()` poll, because Tk is not thread-safe. Each render carries a sequence number and
+  overtaken results are dropped, so a fast drag cannot paint a stale frame last.
+- **The PNG filename alternates** between two names. Tk keeps the image mapped while it is
+  displayed, and overwriting the file currently on screen can be read half-written.
+
+`orrery_pids()` finds conky processes by reading `/proc/*/cmdline` rather than shelling out to
+`pgrep -f`, for the same reason the note above gives: a pattern wide enough to match the conky
+process also matches whatever was asked to look for it.
 
 ### Conky-Calendar-Extra scales itself
 

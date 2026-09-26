@@ -18,9 +18,11 @@
 
 ![alt tag](Conky-Calendar-Extra/screenshot_modernized.png)
 
-<b>Conky-Calendar-Extra (orrery, animated)</b>
+<b>Conky_Orrery (animated 3D)</b>
 
-![alt tag](Conky-Calendar-Extra/screenshot_orrery.png)
+<i>Click the picture for the theme, how to run it, and the colour editor.</i>
+
+[![Conky Orrery](Conky_Orrery/screenshot.png)](Conky_Orrery)
 
 <b>Conky-Revisited-2</b>
 

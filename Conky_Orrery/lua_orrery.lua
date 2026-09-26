@@ -67,7 +67,7 @@ show_readouts = "Yes"
 -- depend on remembering where a value sits:
 HTML_base   = "#DCE6F5"   -- the dials themselves: hoops, ticks, labels, clock
 HTML_accent = "#3DDCFF"   -- now: today's date, and what the machine is doing
-HTML_second = "#B07BFF"   -- what is stored or standing: the cage, disk use
+HTML_second = "#bf4272"   -- what is stored or standing: the cage, disk use
 HTML_warm   = "#FF5F8D"   -- hot end of the temperature ramp
 
 -- Opacity, 0 to 1
