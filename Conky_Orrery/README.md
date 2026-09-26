@@ -1,10 +1,41 @@
 # Conky Orrery
 
-An animated 3D armillary clock for conky. The date is read off four rotating
-hoops, the clock sits in the middle inside a wireframe cage, and every orbiting
-point of light is one of your CPU cores — moving faster the hotter it runs.
+A clock and system monitor for your desktop, drawn as a rotating 3D orrery.
 
 ![Conky Orrery](screenshot.png)
+
+- Four rings show the date: months, day of month, weekday, seconds. Today is lit up.
+- The clock is in the middle.
+- Each glowing dot orbiting the middle is one CPU core. Hotter cores orbit faster.
+- The five arcs around the outside are CPU, memory, GPU temperature, and disk
+  space on `/` and `/home`.
+
+**Get it:**
+
+```bash
+git clone https://github.com/alexsson-xexpanderx/Conky-themes.git
+cd Conky-themes/Conky_Orrery
+```
+
+**Run it:**
+
+```bash
+conky -c start_conky_orrery
+```
+
+**Change the colours:**
+
+```bash
+./orrery_colors.py
+```
+
+Pick a colour, watch the preview update live, press **Apply**. Conky only loads
+its colours at startup, so use **Apply and restart conky** to see the change
+straight away.
+
+The rest of this page is detail. Nothing below is needed to use it.
+
+---
 
 Conky offers no 3D and this uses none. It is a software renderer written
 against cairo's 2D API: points are turned by a 3×3 matrix, divided through by
@@ -87,6 +118,8 @@ cd Conky_Orrery && ./orrery_colors.py
 ```
 
 ![the colour editor](screenshot_gui.png)
+
+![the editor in use](demo-gui.gif)
 
 Pick one of the four colours with the chips at the top, drag around the
 saturation square and hue strip, and the preview on the right redraws as you go.
@@ -186,6 +219,13 @@ X-GNOME-Autostart-enabled=true
 ```
 
 The `--pause=5` gives the desktop a moment to finish coming up first.
+
+## Where it lives
+
+<https://github.com/alexsson-xexpanderx/Conky-themes> — this theme is the
+`Conky_Orrery` folder. A plain `git clone` brings the other conky themes in that
+repository along with it; nothing here depends on them, so the folder can simply
+be copied out on its own if you prefer.
 
 ## Credits
 

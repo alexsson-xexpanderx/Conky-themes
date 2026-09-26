@@ -628,9 +628,12 @@ class Editor(tk.Tk):
         row = self._section(left, "Presets", row)
         presets = tk.Frame(left, bg=BG)
         presets.grid(row=row, column=0, sticky="w")
+        self.preset_chips = []
         for i, (name, colours) in enumerate(PRESETS):
-            PresetChip(presets, name, colours,
-                       command=lambda c=colours: self.use_preset(c)).grid(
+            chip = PresetChip(presets, name, colours,
+                              command=lambda c=colours: self.use_preset(c))
+            self.preset_chips.append(chip)
+            chip.grid(
                 row=i // 3, column=i % 3, padx=(0 if i % 3 == 0 else 7, 0), pady=(0, 7))
         row += 1
 
@@ -676,14 +679,14 @@ class Editor(tk.Tk):
         view.columnconfigure(0, weight=1)
         tk.Label(view, text="Backdrop", bg=SURFACE, fg=TEXT, font=F_BODY).grid(
             row=1, column=0, sticky="w")
-        seg = Segmented(view, [(n, h) for n, h in BACKDROPS], self.backdrop,
-                        command=self.set_backdrop, width=592)
+        seg = self.segmented = Segmented(view, [(n, h) for n, h in BACKDROPS], self.backdrop,
+                                         command=self.set_backdrop, width=592)
         seg.configure(bg=SURFACE)
         seg.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(6, 12))
 
         tk.Label(view, text="Viewing angle", bg=SURFACE, fg=TEXT, font=F_BODY).grid(
             row=3, column=0, sticky="w")
-        angle = Slider(view, 0, 150, 0, command=self.set_phase, width=592)
+        angle = self.angle_slider = Slider(view, 0, 150, 0, command=self.set_phase, width=592)
         angle.configure(bg=SURFACE)
         angle.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(6, 0))
 
@@ -693,7 +696,8 @@ class Editor(tk.Tk):
         self.status.pack(side="left")
         Button(bar, "Apply and restart conky", self.apply_and_restart).pack(side="right")
         Button(bar, "Apply", self.apply, primary=True, width=92).pack(side="right", padx=8)
-        Button(bar, "Revert", self.revert, width=86).pack(side="right")
+        self.revert_button = Button(bar, "Revert", self.revert, width=86)
+        self.revert_button.pack(side="right")
 
         self.refresh()
 
