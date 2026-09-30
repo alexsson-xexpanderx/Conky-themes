@@ -20,8 +20,6 @@
 
 <b>Conky_Orrery (animated 3D)</b>
 
-<i>Click the picture for the theme, how to run it, and the colour editor.</i>
-
 [![Conky Orrery](Conky_Orrery/screenshot.png)](Conky_Orrery)
 
 <b>Conky-Revisited-2</b>
