@@ -10,6 +10,9 @@ A clock and system monitor for your desktop, drawn as a rotating 3D orrery.
 - The five arcs around the outside are CPU, memory, GPU temperature, and disk
   space on `/` and `/home`.
 
+Just want the clock and calendar? Set `show_monitoring = "No"` at the top of
+`lua_orrery.lua` and the cores, the cage and the arcs all go.
+
 **Get it:**
 
 ```bash
@@ -79,34 +82,44 @@ Four hoops, each a dial:
 | outermost | the twelve months | this month |
 | second | every day of the month | today |
 | third | MON to SUN | today |
-| innermost | sixty seconds, unlabelled | a head sweeping once a minute |
+| innermost | sixty seconds, unlabelled | the minute so far, lit up to a sweeping head |
+
+The innermost hoop is a seconds hand. A bar across it marks where the minute
+starts and ends, and the minute so far is lit from that bar round to the head,
+so a quarter of the hoop lit is fifteen seconds gone and the unlit rest is what
+is left. `show_seconds = "No"` takes it away.
 
 So the month, the day and the weekday are readable straight off the rings —
-**SEP**, **26** and **SAT** in the picture above — each larger, bold, in the
-accent colour and lit from behind. The hour and minute come from
+**SEP**, **26** and **SAT** in the picture above — each larger, bold, in
+today's colour and lit from behind. The hour and minute come from
 the clock in the middle.
 
-Today's date is the only thing on the hoops drawn in the accent colour. Every
+Today's date is the only thing on the hoops drawn in today's colour. Every
 tick is identical and every other label is the same dim grey, so there is
-nothing lit up that has to be accounted for. Labels thin out on their own where
-a hoop turns edge-on and its divisions crowd together, and today's value never
-fades — if it would land on the clock it slides outward along the hoop instead.
+nothing lit up that has to be accounted for. Text is never dimmed for being on
+the far side of a hoop — the rings recede, the words stay readable. Labels thin
+out on their own where a hoop turns edge-on and its divisions crowd together,
+and fade where they would run into the clock itself. Today's value never fades:
+if it would land on the clock it slides outward along the hoop instead.
 
 Around the clock is a geodesic cage that swells with CPU load and takes its
 colour from the hottest core. Inside it, one body per CPU core circles on its
 own inclined orbit, faster the hotter that core runs, trailing a comet tail
 whose length follows its speed. **A round glowing dot is a CPU core and nothing
-else.**
+else.** The cores have a colour of their own, violet unless you change it, so
+they cannot be mistaken for the clock or for today's date; a core only turns
+towards the heat colour once it runs hot.
 
 Five arcs sit around the outside — CPU, memory, GPU temperature, root and home —
 spaced evenly from the top. With `enable_graphic_card_temperature_sensor` set to
 `No` there are four and they re-space themselves.
 
-Colour says what kind of thing a readout is, never where it sits. CPU and memory
-share the accent colour because both are what the machine is doing this second;
-root and home share the second colour because both are how full a disk is; the
+As shipped, colour says what kind of thing a readout is, never where it sits.
+CPU and memory share cyan because both are what the machine is doing this
+second; root and home share raspberry because both are how full a disk is; the
 GPU is the only one that changes colour as its value moves, riding the same heat
-ramp as the orbiting cores.
+ramp as the orbiting cores. Every readout has a colour setting of its own all the
+same, so any pair can be split.
 
 ## Changing the colours
 
@@ -121,8 +134,26 @@ cd Conky_Orrery && ./orrery_colors.py
 
 ![the editor in use](demo-gui.gif)
 
-Pick one of the four colours with the chips at the top, drag around the
-saturation square and hue strip, and the preview on the right redraws as you go.
+Every element has a colour and an opacity of its own, listed down the left — with
+its opacity beside it, and its swatch laid over a checkerboard so a faint one
+looks faint — under the part of
+the widget it belongs to: the clock, the rings, the labels, today's date, the
+seconds hoop and the dust; the cores, the heat they turn towards, the cage and
+the glow behind the clock; and each readout's arc, caption and track. Click one
+and for a moment the preview picks it out — everything else fades to a ghost —
+so you can see which part of the widget you are about to recolour; then the
+whole widget comes back by itself, so you can see how it all fits together.
+Changing anything, or clicking the preview, brings it back straight away. Drag
+around the saturation square and hue strip to pick the colour, and the Opacity
+slider under it to set how solidly the element is drawn. A dot beside an element
+means its colour or opacity is not what is saved yet. Heat has no opacity of its
+own: it is the colour the cores, the cage, the glow and the GPU turn when hot.
+
+Under **Show** are switches for the parts that can be turned off — the seconds
+hoop, the dust, the whole machine, the cage, the glow, the readouts and the GPU
+readout. A
+switch inside a part that is off dims, and so does every element it hides, so it
+is clear why a colour change is not showing.
 Nothing is written to `lua_orrery.lua` until you press **Apply**, and the
 previous file is kept as `lua_orrery.lua.bak`.
 
@@ -135,8 +166,10 @@ away from the first.
 A few things it gives you that editing the file by hand does not:
 
 - **Presets** — Ice, Ember, Nord, Gruvbox, Matrix, Dracula, Rosewater and Mono,
-  shown as the four colours they would set, as starting points rather than
-  destinations. They change the colours only and leave your opacity settings
+  each a palette of five, as starting points rather than destinations. A preset
+  colours every element from its palette by kind — the dials, what is happening
+  now, what is stored or standing, the cores, heat — so it keeps the scheme
+  above. It changes colours only and leaves your switches and opacity settings
   alone.
 - **Saved** — the swatch under the hex box is what is currently on disk for the
   colour you are editing. Click it to put that one colour back, which is finer
@@ -172,20 +205,26 @@ All of them live in the `USER CONFIGURATION` block at the top of
 | Setting | Default | What it does |
 |---|---|---|
 | `widget_size` | 640 | diameter of the outermost hoop, in pixels |
+| `show_monitoring` | Yes | the cores, the cage and the outer arcs; No leaves the clock and calendar |
 | `motion` | 1.0 | scales every speed at once; 0 freezes the assembly |
 | `number_of_physical_CPU_cores` | 0 | how many cores to put in orbit; 0 means all of them |
 | `enable_graphic_card_temperature_sensor` | Yes | whether the GPU gets a readout |
 | `max_temperature` | 100 | what a body at the outermost orbit represents, in °C |
-| `warm_above` | 70 | where colours start shifting towards `HTML_warm` |
+| `warm_above` | 70 | where the cores and the GPU start shifting towards `HTML_heat` |
 | `root_filesystem`, `home_filesystem` | `/`, `/home` | mount points for the two disk readouts |
 | `camera_*` | — | how the view turns and rocks |
-| `show_dust`, `dust_count` | Yes, 80 | ambient particles, for parallax |
-| `show_readouts` | Yes | the five outer arcs |
-| `depth_fade` | 0.22 | how much brightness the far side keeps; 1 flattens it |
+| `show_dust`, `dust_count`, `dust_size` | Yes, 80, 1.1 | ambient particles, for parallax |
+| `show_readouts` | Yes | the five outer arcs, when `show_monitoring` is on |
+| `show_cage`, `show_glow` | Yes, Yes | the cage round the clock, and the glow behind it, each on its own |
+| `show_seconds` | Yes | the seconds hoop, the innermost ring just outside the cage |
+| `HTML_*` | — | seventeen colours, one per element; easiest changed in `orrery_colors.py` |
+| `opacity_*` | — | one per element (all but Heat): how solidly it is drawn, 0 to 1 |
+| `depth_fade` | 0.22 | how much brightness the far side of the rings, cage and cores keeps; 1 flattens it. Text is never dimmed |
 | `font_name` | DejaVu Sans | any family fontconfig knows |
 
 `widget_size` is the outermost hoop, but the readout values are written outside
-it, so the widget really spans about 15% more than that. The window it is drawn
+it, so the widget really spans about 15% more than that — about 6% more without
+the readouts. The window it is drawn
 into is `size` at the top of `start_conky_orrery` (default 820) and has to clear
 the larger figure; conky will make the window a little larger than asked.
 
@@ -197,7 +236,9 @@ The frame rate is `fps` at the top of `start_conky_orrery`, which sets
 The whole frame is redrawn every tick, so the frame rate is also what the widget
 costs. At the default 20fps, with 24 cores in orbit and the hoop labels, it
 measures about 8% of one core — a quarter of one percent of a 32-thread machine.
-Drop `fps` to 10 on a laptop; it still animates perfectly well.
+Drop `fps` to 10 on a laptop; it still animates perfectly well. With
+`show_monitoring = "No"` a frame costs about half as much, and no sensor is
+read at all.
 
 The numbers behind it are read once a second, not once a frame, and eased
 towards from every frame, so the readouts glide rather than step and no `${...}`

@@ -200,11 +200,16 @@ front. Four things about it are load-bearing:
 - **Depth fade is per object, not per scene.** `fade_within(vz, reference)` takes the half-depth
   of the thing being drawn. Fading the 96-unit cage against the 272-unit scene leaves it spanning
   only the middle of the ramp, so its back comes out nearly as bright as its front and it reads as
-  a solid ball instead of a cage.
+  a solid ball instead of a cage. **Text is never depth-faded**, neither the hoop labels nor the
+  clock: dimming the words cost more reading than it bought depth. Today's labels spent a third of
+  a camera turn below half strength, and today's month at the back of its hoop came out at about a
+  quarter, fainter than the cores in front of it. The hoop lines and ticks still recede and the
+  type still shrinks with perspective, which is depth enough.
 - **Sampling is throttled to 1Hz and eased.** `${cpu}`, `${memperc}` and `${fs_free_perc}` are
   read once a second, not once a frame, and every frame eases towards the last reading with a
   framerate-independent exponential (`1 - exp(-dt/tau)`). Reading them per frame would parse
-  twenty `${...}` a second for numbers that do not change that fast.
+  twenty `${...}` a second for numbers that do not change that fast. With `show_monitoring = "No"`
+  nothing is sampled at all.
 
 Animation time comes from `/proc/uptime`, which is the only sub-second wall clock available:
 `os.time()` has one-second resolution and `os.clock()` measures CPU time consumed, so it crawls
@@ -216,31 +221,50 @@ frame that arrives late does not teleport anything that integrates over it.
 `update_interval` in `start_conky_orrery` is what actually sets the frame rate; `target_fps` in
 `lua_orrery.lua` only supplies the fallback frame duration and the warm-up threshold. Change both
 together. The whole frame is redrawn every tick, so the frame rate is also the cost: 20fps with 24
-bodies and the hoop labels measures ~8% of one core.
+bodies and the hoop labels measures ~8% of one core. The clock-and-calendar mode draws a frame in
+about half the time (3.4ms against 6.5ms through the preview harness).
 
 Two radii are in tension and were tuned against renders, not by eye. `R_CAGE` has to be larger
 than half the clock's width or the cage sits entirely behind the text and the crossing effect
 disappears; the rest of the radial budget (`R_YEAR` down to `ORBIT_INNER`) is sized outward from
 it. `widget_size` is the outermost hoop, but readout values are written outside it, so the fit
 test measures `CONTENT_DIAMETER`, not `BASE_DIAMETER` — sizing against the latter lets the corner
-text run out of a small window.
+text run out of a small window. Without the readouts it is 680, not 640: the glow behind this
+month's label reaches ~335 units at the widest point of its hoop once perspective is applied. That
+figure was measured from renders over a full camera turn, not derived; derive it and you get 320.
 
 Three of the four hoops carry the date as labels (months, day numbers, weekdays) and the middle
 holds only the clock, so the labels are the readout and two rules keep them legible. Where a hoop
 turns edge-on its divisions crowd into a knot, so a label fades by how much room its neighbour
-leaves it; and no label may be drawn within `CLOCK_KEEPOUT` of the middle, or a steeply tilted
-hoop writes across the clock. The live label is exempt from both — it is *pushed* out of the
-keep-out along its own direction from the centre rather than faded — because fading it would mean
-that every time a hoop came edge-on, the one thing worth reading off it disappeared. Label
-tangents come from the neighbours either side rather than a second projected sample: every anchor
-is projected already, so it is free and steadier over two divisions than over a short chord.
+leaves it; and no label may run into the clock, or a steeply tilted hoop writes across it. The live
+label is exempt from both — it is *pushed* out along its own direction from the centre rather than
+faded — because fading it would mean that every time a hoop came edge-on, the one thing worth
+reading off it disappeared. Label tangents come from the neighbours either side rather than a
+second projected sample: every anchor is projected already, so it is free and steadier over two
+divisions than over a short chord.
+
+The clock's keep-out is **its own ink box**, not a radius. `CLOCK_SAMPLE` is measured at
+`CLOCK_SIZE` and each label's box, turned to its lean, is tested against it; a label fades over
+`KEEPOUT_RAMP` as it closes in. It used to be a circle of radius 104 (+44 ramp) round the middle,
+which is the wrong shape for a clock that is wide and short: a label just below the numerals,
+nowhere near touching them, was inside it and vanished. A viewer of the demo video reported exactly
+that, as APR disappearing "when it gets too close to the line it's following" — it was the circle,
+not the line. Over a camera turn the circle hid 14% of otherwise-readable labels; the box hides 3%.
+The live label is pushed to `LIVE_CLEARANCE` (32) from the box rather than to its edge, because a
+day number pushed only to the edge read as part of the time.
+
+Today's three labels are **not** kept off each other. Over a camera turn two of them overlap (by
+bounding box) in about 23% of frames, before and after the box keep-out alike. Pushing a crowded one
+on outward until clear was tried and taken out: whenever the first clear spot switched from one side
+of another label to the far side, the label jumped up to 75 units between frames, which reads worse
+than the overlap. A fix has to move them continuously — ease the offset, not the position.
 
 Label sizes change every frame with perspective, so `cairo_text_extents` is called once per string
 at `REFERENCE_SIZE` and the result scaled (`extent_for`). Measuring per label per frame is around
 a thousand calls a second for a set of strings that never changes. Hinting makes the scaling very
 slightly non-linear, which is a fraction of a pixel on centred text.
 
-**Today's date is the only thing on a hoop drawn in the accent colour**, and the reading is the
+**Today's date is the only thing on a hoop drawn in today's colour** (`HTML_today`), and the reading is the
 label itself, lit from behind with `put_glow`. Two other ways of marking it were tried and both
 read as bugs to the user. A glowing bead riding the hoop is indistinguishable from an orbiting
 body a few pixels away — in this widget a round glowing dot is a CPU core and nothing else.
@@ -249,7 +273,12 @@ the ticks are on the hoop while the label is written outside it and half a divis
 longer tick marking the hoop's zero went the same way. So every tick is identical and every other
 label is the same dim grey. Only the seconds hoop, which carries no labels and is the one thing
 that moves between frames, keeps a travelling head. Do not add a second lit thing to a labelled
-hoop.
+hoop. The seconds hoop has no labels, so at the user's request it shows progress instead: a bar
+across it where the minute starts and ends, and the minute so far lit from that bar to the head,
+brightening into the old streak over the last `tail_degrees`. Before that it had neither, and a user
+took it for an unexplained ring round the cage, which is also why it has `show_seconds`. The bar
+is not the "longer tick" rejected above: that one marked a labelled hoop's zero for no reason a
+reader could see, while this one is where the lit arc visibly starts.
 
 Labels sit at division *centres* (`(i - 0.5) * TAU / count`) and the live mark snaps to the centre
 of the division the value falls in, rather than tracking the value continuously. A label names the
@@ -257,22 +286,73 @@ sector after its tick, so a continuous mark sits almost on FRI by Thursday eveni
 OCT by late September — correct to the hour and wrong to the eye. The continuous value is still
 what is passed in; only its presentation is quantised.
 
-Readout colour encodes kind, not position: accent for live load (CPU, MEM), second for disk use
-(ROOT, HOME), the heat ramp for degrees (GPU). The readouts are spaced evenly from the top from a
+**Every element has its own colour setting** — seventeen `HTML_*` keys, from `HTML_clock` to
+`HTML_home`, read into the `INK` table — because the user wanted to try colours element by element
+in the editor. **And its own opacity** — `opacity_<element>`, read into `OPACITY`, for all but Heat,
+which is a colour other elements turn rather than something drawn. They replaced four shared
+opacity tiers. The setting is the element's main part; any other part (a readout's value, the
+cage's vertices, the seconds hoop's unlit ring) is written as its designed alpha times
+`scale_of(element)`, which is `OPACITY / DESIGNED` and so exactly 1 at the shipped value — the
+defaults render pixel-identically to the tiers they replaced, checked with fixed sensors. As shipped they come from a palette of five and colour encodes kind, not position:
+white for the dials, cyan for what is happening now (today, CPU, MEM), raspberry for what is stored
+or standing (seconds, cage, glow, ROOT, HOME), violet for the cores and the GPU while cool, pink for
+heat. The editor's presets keep to that by giving each element the palette colour its role names.
+`heat_color(temperature, cool)` blends an element's own cool colour into `HTML_heat`; the cage and
+the glow blend towards the same heat by the hottest core. The cores were given a colour of their
+own because at idle two dozen dots in today's cyan made the date the hard thing to find, so a
+preset's cool colour has to stay clear of its base and accent (the clock, the date) and of its
+second (the cage the cores orbit through). The readouts are spaced evenly from the top from a
 list built at draw time, so dropping the GPU takes the set from five to four and the layout
 follows — do not reintroduce fixed corner angles. Beads use five stacked discs for a halo rather than a cairo gradient, because at up to forty
 beads a frame the pattern allocation is not free; the nucleus is the one thing large enough for
 those steps to show as rings, so it alone uses `put_glow` and a real radial gradient.
 
+`show_monitoring = "No"` is the clock and the calendar alone: no cores, no cage, no readouts, no
+sampling. It exists because the combined widget was reported as doing two jobs in one picture —
+reading the time you do not want the machine, and the other way round. It also takes
+`show_readouts` with it. The hoops still cross in front of and behind the numerals, so the
+depth-sorting point above holds without the cage. `show_cage` and `show_glow` turn the cage and
+the glow behind the clock off separately; `draw_cage` puts the glow down before it looks at
+`show_cage`, because with the cage off the glow is the one thing left showing how hot the hottest
+core is.
+
 ### The orrery's colour editor
 
-`Conky_Orrery/orrery_colors.py` is a tkinter editor for the four `HTML_*` colours, the four
-`opacity_*` values and `depth_fade`, with a live preview. Standard library only — tkinter ships
-with Python and Tk 8.6 reads PNG unaided, so there is nothing to install and no Pillow dependency
-even though Pillow happens to be present on this machine.
+`Conky_Orrery/orrery_colors.py` is a tkinter editor for every element's `HTML_*` colour and
+`opacity_*`, the Yes/No switches for the parts that can be turned off, and `depth_fade`, with a
+live preview. Standard library only — tkinter ships with Python and Tk 8.6 reads PNG unaided, so
+there is nothing to install and no Pillow dependency even though Pillow happens to be present on
+this machine.
 
-**Almost nothing in it is a ttk widget.** Buttons, sliders, the segmented control, the swatch and
-preset chips and the colour picker are all drawn on `tk.Canvas`, because the stock ttk themes
+`ELEMENTS` lists the colours in the groups the config block uses, each with a `role` that presets
+go through (`ROLES`). `SWITCHES` names each switch's parent and `SHOWN_BY` the switch an element
+hangs off; `switched_on` walks that chain, so a dependent switch and every element it hides are
+drawn dimmed while a parent is off, and the description under the element's name says the
+preview leaves it out.
+
+**Choosing an element picks it out in the preview for a moment**, so it is plain which part of the
+widget a colour belongs to. `spotlight_text` puts `orrery_spotlight = "<element>"` ahead of the
+script, and the widget itself then draws every other element as a ghost — `emphasis()` gives each
+primitive a factor through the `drawing` variable, and `share()` turns it into alpha, capped at full
+first. It is done by alpha in the widget, not by colour in the editor, for a reason that was found
+the hard way: fading the other colours into the backdrop made them dark, and anything passing in
+front of the picked element at full strength cut a dark stroke through it — through the clock's
+numerals, for one. With `orrery_spotlight` unset every factor is 1 and rendering is pixel-identical
+to before; that was checked with fixed sensors at three poses. The editor also puts every opacity
+at full so a faint element still shows, and its switches on so a hidden one shows anyway; Dust is
+drawn larger (`dust_size`), since a speck is under a pixel in a 600px preview, and Heat gets a
+machine running hot (`warm_above` 0, `max_temperature` 1), because at idle nothing is drawn in it.
+
+The spotlight ends by itself `SPOTLIGHT_MS` after the picked-out frame appears — the user could not
+find how to get the whole widget back — and at once on any edit or a click on the preview, so a
+colour is judged among the others. `spotlight_serial` lets a timer that has been overtaken by a
+newer selection tell that it has. The text only ever goes to the renderer, through
+`preview_text()`; Apply writes `candidate_text()`, which never sees it. The editor only offers settings the file actually has, since anything else
+has no line to be written back to; a `lua_orrery.lua` from before per-element colours has none of
+them, and gets an error rather than an empty editor.
+
+**Almost nothing in it is a ttk widget.** Buttons, sliders, switches, the segmented control, the
+element list, the preset chips and the colour picker are all drawn on `tk.Canvas`, because the stock ttk themes
 cannot be pushed far from their Motif ancestry — `clam`'s scale still draws a hatched grip — and
 the editor sits beside a preview whose whole job is to be looked at. `rounded()` draws a rounded
 rectangle as a `create_polygon` with `smooth=True`, which at these radii is indistinguishable from

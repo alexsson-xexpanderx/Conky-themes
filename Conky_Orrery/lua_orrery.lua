@@ -30,6 +30,13 @@ motion = 1.0
 -- scales from this; if the conky window is smaller, the widget shrinks to fit.
 widget_size = 640
 
+-- Show the machine as well as the time? (Yes/No) "Yes" puts a body in orbit
+-- for each CPU core, a cage round the clock that swells with CPU load, and the
+-- readouts around the outside. "No" is the clock and the calendar on their own:
+-- the core, temperature, filesystem and readout settings below then have no
+-- effect, and nothing is sampled at all.
+show_monitoring = "Yes"
+
 -- How many CPU cores to put in orbit; 0 means every sensor the kernel
 -- publishes. There is one sensor per physical core, normally fewer than the
 -- thread count htop shows. A 32-core machine makes a busy sky -- cap it here.
@@ -41,8 +48,8 @@ enable_graphic_card_temperature_sensor = "Yes"
 -- Temperature a body at the outermost orbit represents, in degrees Celsius.
 max_temperature = 100
 
--- Temperature at which colours start shifting from HTML_accent towards
--- HTML_warm. Anything cooler than this stays accent-coloured.
+-- Temperature at which the cores and the GPU start shifting towards
+-- HTML_heat. Anything cooler than this keeps its own colour.
 warm_above = 70
 
 -- Filesystems for the outer readouts.
@@ -57,24 +64,74 @@ camera_pitch = 17           -- degrees above the equator, at rest
 camera_rock = 11            -- degrees the pitch swings either side
 
 -- Ambient dust gives the scene depth through parallax. (Yes/No)
-show_dust = "Yes"
+show_dust = "No"
 dust_count = 80
+dust_size = 1.1           -- radius of a speck, in design units
 
--- The four readouts around the outside. (Yes/No)
+-- The innermost hoop, just outside the cage: the seconds hand. Its bright head
+-- sweeps round once a minute, and it is the one thing that moves every frame.
+-- (Yes/No)
+show_seconds = "Yes"
+
+-- The readouts around the outside. (Yes/No)
 show_readouts = "Yes"
 
--- Colours. Each one means a kind of thing, so that reading the widget does not
--- depend on remembering where a value sits:
-HTML_base   = "#DCE6F5"   -- the dials themselves: hoops, ticks, labels, clock
-HTML_accent = "#3DDCFF"   -- now: today's date, and what the machine is doing
-HTML_second = "#bf4272"   -- what is stored or standing: the cage, disk use
-HTML_warm   = "#FF5F8D"   -- hot end of the temperature ramp
+-- The cage round the clock, which swells with CPU load, and the soft glow
+-- behind the numerals. Each can go on its own. (Yes/No)
+show_cage = "No"
+show_glow = "No"
 
--- Opacity, 0 to 1
-opacity_track = 0.16      -- unlit hoops, ticks and readout tracks
-opacity_label = 0.52      -- month names and readout captions
-opacity_text  = 0.92      -- clock, date and readout values
-opacity_live  = 1.00      -- the accent marks and the orbiting bodies
+-- Colours, one for every element, so any of them can be changed on its own --
+-- orrery_colors.py edits them all with a live preview. As shipped they are a
+-- palette of five, where a colour means a kind of thing and not a place:
+-- white for the dials, cyan for what is happening now, raspberry for what is
+-- stored or standing, violet for the cores and pink for heat. The editor's
+-- presets keep to that; changing a single element is entirely up to you.
+
+-- The clock and the calendar
+HTML_clock    = "#DCE6F5"   -- the time in the middle
+HTML_rings    = "#DCE6F5"   -- the month, day and weekday hoops and their ticks
+HTML_labels   = "#DCE6F5"   -- month names, day numbers and weekdays
+HTML_today    = "#3DDCFF"   -- today's month, day and weekday, and their glow
+HTML_seconds  = "#bf4272"   -- the seconds hoop and its sweeping head
+HTML_dust     = "#DCE6F5"   -- the drifting specks
+
+-- The machine
+HTML_cores    = "#9C7CFF"   -- the orbiting cores, while they run cool
+HTML_heat     = "#FF5F8D"   -- what cores, cage, glow and GPU turn when hot
+HTML_cage     = "#bf4272"   -- the cage round the clock
+HTML_glow     = "#bf4272"   -- the glow behind the clock
+
+-- The readouts
+HTML_tracks   = "#DCE6F5"   -- the unlit part of each arc
+HTML_captions = "#DCE6F5"   -- the names above the values
+HTML_cpu      = "#7CFFAC"
+HTML_memory   = "#7CFFAC"
+HTML_gpu      = "#7CFFAC"   -- while it runs cool
+HTML_root     = "#7CFFAC"
+HTML_home     = "#7CFFAC"
+
+-- Opacity, 0 to 1: how solidly each element is drawn, by the same names as the
+-- colours, and edited next to them in orrery_colors.py. Heat has none of its
+-- own; it is a colour other elements turn. Where an element has more than one
+-- part -- a readout's arc and its value, the seconds hoop's lit arc and the
+-- rest of it -- this is its main part, and the others keep their share of it.
+opacity_clock    = 0.92
+opacity_rings    = 0.16
+opacity_labels   = 0.52
+opacity_today    = 1.00
+opacity_seconds  = 1.00
+opacity_dust     = 0.30
+opacity_cores    = 1.00
+opacity_cage     = 0.16
+opacity_glow     = 0.21
+opacity_tracks   = 0.16
+opacity_captions = 0.52
+opacity_cpu      = 0.35
+opacity_memory   = 0.35
+opacity_gpu      = 0.35
+opacity_root     = 0.35
+opacity_home     = 0.35
 
 -- Depth cueing: how much of its brightness the far side of the assembly keeps.
 -- 1 disables the effect and flattens the picture; 0.15 is a deep fade.
@@ -111,9 +168,13 @@ local sqrt, floor, pi = math.sqrt, math.floor, math.pi
 local TAU = 2 * pi
 local RAD = pi / 180
 
+local show_monitoring_now = tostring(show_monitoring):lower() == "yes"
 local show_gpu = tostring(enable_graphic_card_temperature_sensor):lower() == "yes"
 local show_dust_now = tostring(show_dust):lower() == "yes"
-local show_readouts_now = tostring(show_readouts):lower() == "yes"
+local show_seconds_now = tostring(show_seconds):lower() == "yes"
+local show_readouts_now = show_monitoring_now and tostring(show_readouts):lower() == "yes"
+local show_cage_now = show_monitoring_now and tostring(show_cage):lower() == "yes"
+local show_glow_now = show_monitoring_now and tostring(show_glow):lower() == "yes"
 
 local function clamp(v, low, high)
   if v < low then return low elseif v > high then return high end
@@ -127,10 +188,33 @@ local function hex2rgb(hex)
           tonumber("0x" .. hex:sub(5, 6)) / 255}
 end
 
-local BASE   = hex2rgb(HTML_base)
-local ACCENT = hex2rgb(HTML_accent)
-local SECOND = hex2rgb(HTML_second)
-local WARM   = hex2rgb(HTML_warm)
+-- Every element's colour, by the name after HTML_ in the settings above. One
+-- that has gone missing from the file is drawn white rather than stopping the
+-- whole widget from drawing.
+local INK = {}
+for _, name in ipairs({"clock", "rings", "labels", "today", "seconds", "dust",
+                        "cores", "heat", "cage", "glow", "tracks", "captions",
+                        "cpu", "memory", "gpu", "root", "home"}) do
+  INK[name] = hex2rgb(_G["HTML_" .. name] or "#FFFFFF")
+end
+
+-- Every element's opacity, from the settings above, falling back to the shipped
+-- value for one that is missing. A part drawn at some other strength than the
+-- element's main part -- the cage's vertices, a readout's value -- is written as
+-- its designed alpha times scale_of(), which is exactly 1 at the shipped value,
+-- so every part keeps the proportions it was designed with.
+local DESIGNED = {clock = 0.92, rings = 0.16, labels = 0.52, today = 1.00, seconds = 1.00,
+                  dust = 0.30, cores = 1.00, cage = 0.16, glow = 0.21, tracks = 0.16,
+                  captions = 0.52, cpu = 1.00, memory = 1.00, gpu = 1.00, root = 1.00,
+                  home = 1.00}
+local OPACITY = {}
+for name, designed in pairs(DESIGNED) do
+  OPACITY[name] = tonumber(_G["opacity_" .. name]) or designed
+end
+
+local function scale_of(name)
+  return OPACITY[name] / DESIGNED[name]
+end
 
 local function mix(a, b, t)
   return {a[1] + (b[1] - a[1]) * t,
@@ -138,14 +222,43 @@ local function mix(a, b, t)
           a[3] + (b[3] - a[3]) * t}
 end
 
--- Readings stay accent-coloured until warm_above and only then shift towards
--- HTML_warm, so a machine sitting at idle never reads as a hot one. Keyed to
+-- Readings keep their own colour until warm_above and only then shift towards
+-- HTML_heat, so a machine sitting at idle never reads as a hot one. Keyed to
 -- degrees rather than a fraction of max_temperature, so raising the ceiling
 -- does not quietly move the point at which things start looking hot.
-local function heat_color(temperature)
+--
+-- The cores' cool colour is not today's. They used to idle in the same cyan as
+-- the date, so two dozen glowing dots around the clock matched the three labels
+-- worth reading, and the date was the harder of the two to find.
+local function heat_color(temperature, cool)
   local span = max_temperature - warm_above
   local t = span > 0 and (temperature - warm_above) / span or 1
-  return mix(ACCENT, WARM, clamp(t, 0, 1))
+  return mix(cool, INK.heat, clamp(t, 0, 1))
+end
+
+-- orrery_colors.py's preview sets orrery_spotlight to one element's name, to
+-- show which part of the widget a colour belongs to; conky never sets it. Every
+-- other element is then drawn as a faint ghost of itself. That is done here, by
+-- alpha, rather than in the editor by sinking the other colours into the
+-- backdrop: a sunk colour is dark, and drawn at strength in front of the picked
+-- element it painted it out -- a ring crossing the clock cut a dark stroke
+-- through the numerals.
+local SPOTLIGHT = orrery_spotlight
+local GHOST = 0.08
+
+-- Heat is never drawn on its own; it is what these turn as they run hot.
+local SHOWS_HEAT = {cores = true, cage = true, glow = true, gpu = true}
+
+local function emphasis(name)
+  if SPOTLIGHT == nil or SPOTLIGHT == name then return 1 end
+  if SPOTLIGHT == "heat" and SHOWS_HEAT[name] then return 1 end
+  return GHOST
+end
+
+-- The alpha to draw at, given an element's emphasis: unchanged at 1, and for a
+-- ghost that share of it, capped at full strength first.
+local function share(alpha, e)
+  return e < 1 and math.min(alpha, 1) * e or alpha
 end
 
 -- Conky yields an empty string for a sensor or mount point that is not there.
@@ -393,6 +506,7 @@ end
 -- How much brightness something keeps at this depth. Straight linear fade
 -- across the depth of the assembly: the far side recedes, the near side is
 -- full strength. This is what stops a wireframe reading as a flat tangle.
+-- Text is the exception and never goes through here -- see draw_hoop_labels.
 local DEPTH_REFERENCE = 272
 
 -- `reference` is the half-depth of the object being drawn. Fading everything
@@ -428,11 +542,15 @@ local live = 0
 
 local function by_depth(a, b) return a.depth > b.depth end
 
+-- The element whatever is being put down belongs to, for emphasis().
+local drawing = nil
+
 local function slot(depth)
   live = live + 1
   local p = pool[live]
   if p == nil then p = {}; pool[live] = p end
   p.depth = depth
+  p.e = emphasis(drawing)
   return p
 end
 
@@ -522,9 +640,10 @@ end
 
 local function paint_primitive(cr, p)
   local kind = p.kind
+  local a = share(p.a, p.e)
 
   if kind == SEGMENT then
-    cairo_set_source_rgba(cr, p.r, p.g, p.b, p.a)
+    cairo_set_source_rgba(cr, p.r, p.g, p.b, a)
     cairo_set_line_width(cr, p.w)
     cairo_new_path(cr)
     cairo_move_to(cr, p.x1, p.y1)
@@ -534,21 +653,21 @@ local function paint_primitive(cr, p)
   elseif kind == DOT then
     if p.glow > 0 then
       for i = 1, 5 do
-        cairo_set_source_rgba(cr, p.r, p.g, p.b, p.a * HALO_ALPHA[i])
+        cairo_set_source_rgba(cr, p.r, p.g, p.b, a * HALO_ALPHA[i])
         cairo_new_path(cr)
         cairo_arc(cr, p.x1, p.y1, p.w * HALO_RADIUS[i] * p.glow, 0, TAU)
         cairo_fill(cr)
       end
     end
-    cairo_set_source_rgba(cr, p.r, p.g, p.b, p.a)
+    cairo_set_source_rgba(cr, p.r, p.g, p.b, a)
     cairo_new_path(cr)
     cairo_arc(cr, p.x1, p.y1, p.w, 0, TAU)
     cairo_fill(cr)
 
   elseif kind == GLOW then
     local g = cairo_pattern_create_radial(p.x1, p.y1, 0, p.x1, p.y1, p.w)
-    cairo_pattern_add_color_stop_rgba(g, 0.00, p.r, p.g, p.b, p.a)
-    cairo_pattern_add_color_stop_rgba(g, 0.45, p.r, p.g, p.b, p.a * 0.34)
+    cairo_pattern_add_color_stop_rgba(g, 0.00, p.r, p.g, p.b, a)
+    cairo_pattern_add_color_stop_rgba(g, 0.45, p.r, p.g, p.b, a * 0.34)
     cairo_pattern_add_color_stop_rgba(g, 1.00, p.r, p.g, p.b, 0)
     cairo_set_source(cr, g)
     cairo_new_path(cr)
@@ -562,7 +681,7 @@ local function paint_primitive(cr, p)
     cairo_save(cr)
     cairo_translate(cr, p.x1, p.y1)
     if p.rot ~= 0 then cairo_rotate(cr, p.rot) end
-    cairo_set_source_rgba(cr, p.r, p.g, p.b, p.a)
+    cairo_set_source_rgba(cr, p.r, p.g, p.b, a)
     cairo_move_to(cr, -width / 2 - bearing, height / 2)
     cairo_show_text(cr, p.text)
     cairo_restore(cr)
@@ -676,10 +795,10 @@ for i = 1, 31 do DAYS[i] = tostring(i) end
 -- not divide into each other, so the assembly never falls back into the same
 -- pose twice.
 local HOOPS = {
-  {radius = R_YEAR,   tilt = 0,   swing = 0,   drift = 0.9,  wander = 71,  colour = BASE,   weight = 2.0},
-  {radius = R_MONTH,  tilt = 62,  swing = 35,  drift = -1.3, wander = 89,  colour = BASE,   weight = 1.6},
-  {radius = R_DOW,    tilt = 108, swing = 70,  drift = 1.7,  wander = 103, colour = BASE,   weight = 1.6},
-  {radius = R_SECOND, tilt = 145, swing = 110, drift = -2.1, wander = 127, colour = SECOND, weight = 1.3},
+  {radius = R_YEAR,   tilt = 0,   swing = 0,   drift = 0.9,  wander = 71,  colour = INK.rings,   weight = 2.0, element = "rings"},
+  {radius = R_MONTH,  tilt = 62,  swing = 35,  drift = -1.3, wander = 89,  colour = INK.rings,   weight = 1.6, element = "rings"},
+  {radius = R_DOW,    tilt = 108, swing = 70,  drift = 1.7,  wander = 103, colour = INK.rings,   weight = 1.6, element = "rings"},
+  {radius = R_SECOND, tilt = 145, swing = 110, drift = -2.1, wander = 127, colour = INK.seconds, weight = 1.3, element = "seconds"},
 }
 
 local function hoop_matrix(hoop, t)
@@ -698,6 +817,11 @@ end
 local function draw_hoop(hoop, t, divisions, value, lit_colour, bead_size, tick_length,
                          tail_degrees, snap)
   set_model(hoop_matrix(hoop, t))
+  drawing = hoop.element
+  -- The rings are drawn at their own opacity. The seconds hoop's opacity is
+  -- its lit parts', and its unlit ring keeps the share of that it was given.
+  local lit = OPACITY[hoop.element] or 1
+  local base = hoop.element == "rings" and OPACITY.rings or 0.16 * scale_of(hoop.element)
 
   local radius = hoop.radius
   local px, py, pz = project(radius, 0, 0)
@@ -706,7 +830,7 @@ local function draw_hoop(hoop, t, divisions, value, lit_colour, bead_size, tick_
     local angle = i * TAU / HOOP_STEPS
     local x, y, z = project(radius * cos(angle), 0, radius * sin(angle))
     put_segment(px, py, x, y, (pz + z) / 2, hoop.colour,
-                opacity_track * hoop.weight * fade((pz + z) / 2), 1.5 * unit)
+                base * hoop.weight * fade((pz + z) / 2), 1.5 * unit)
     px, py, pz = x, y, z
   end
 
@@ -715,7 +839,7 @@ local function draw_hoop(hoop, t, divisions, value, lit_colour, bead_size, tick_
   -- outside it and half a division round, so the pair read as two stray dashes
   -- floating near the text rather than as a bracket around it. On a labelled
   -- hoop the lit label is the whole reading, and nothing else on the hoop is
-  -- drawn in the accent colour. A marked zero went the same way -- a longer
+  -- drawn in today's colour. A marked zero went the same way -- a longer
   -- tick nobody can account for is worse than no tick at all.
   for i = 0, divisions - 1 do
     local angle = i * TAU / divisions
@@ -726,7 +850,7 @@ local function draw_hoop(hoop, t, divisions, value, lit_colour, bead_size, tick_
     local x2, y2, z2 = project(outer * ca, 0, outer * sa)
     local depth = (z1 + z2) / 2
     put_segment(x1, y1, x2, y2, depth, hoop.colour,
-                opacity_track * 2.4 * hoop.weight * 0.8 * fade(depth), 1.6 * unit)
+                base * 2.4 * hoop.weight * 0.8 * fade(depth), 1.6 * unit)
   end
 
   -- The live mark. On a labelled hoop it snaps to the middle of the division it
@@ -736,28 +860,42 @@ local function draw_hoop(hoop, t, divisions, value, lit_colour, bead_size, tick_
   -- do, but it put the mark almost on FRI by Thursday evening and almost on OCT
   -- by late September -- correct to the hour, and wrong to the eye.
   -- The unlabelled hoop has no division to light and nothing written on it, so
-  -- it keeps a travelling head with a streak swept back along the ring. That is
+  -- it keeps a travelling head instead, with the minute so far lit behind it
+  -- from a bar marking where the minute starts and ends. That is
   -- what makes the seconds sweep read as a sweep, and it is the only hoop where
   -- anything moves between one frame and the next.
   if not snap then
-    local angle = TAU * (value % divisions) / divisions
-    local TAIL, SPAN = 10, tail_degrees * RAD
-    local last_x, last_y, last_z
-    for i = TAIL, 0, -1 do
-      local a = angle - SPAN * i / TAIL
+    local fraction = (value % divisions) / divisions
+    local angle = TAU * fraction
+
+    -- Where the minute starts and ends: a bar across the hoop, longer than any
+    -- tick. Without it there was no telling how far into the minute the head
+    -- was, or how much of it was left.
+    local x1, y1, z1 = project(radius - 12, 0, 0)
+    local x2, y2, z2 = project(radius + 12, 0, 0)
+    local bar = (z1 + z2) / 2
+    put_segment(x1, y1, x2, y2, bar, lit_colour, lit * fade(bar), 2.8 * unit)
+
+    -- The minute so far, lit from the bar round to the head, so a quarter of
+    -- the hoop lit is a quarter of the minute gone. The last few degrees
+    -- brighten and thicken into a streak, so the head still reads as the thing
+    -- that moves.
+    local SPAN = tail_degrees * RAD
+    local steps = math.max(1, math.ceil(HOOP_STEPS * fraction))
+    local px, py, pz = project(radius, 0, 0)
+    for i = 1, steps do
+      local a = angle * i / steps
       local x, y, z = project(radius * cos(a), 0, radius * sin(a))
-      if last_x then
-        local depth = (last_z + z) / 2
-        local strength = 1 - i / TAIL
-        put_segment(last_x, last_y, x, y, depth, lit_colour,
-                    opacity_live * fade(depth) * strength * 0.65,
-                    (1.2 + 2.0 * strength) * unit)
-      end
-      last_x, last_y, last_z = x, y, z
+      local depth = (pz + z) / 2
+      local streak = clamp(1 - (angle - a) / SPAN, 0, 1)
+      put_segment(px, py, x, y, depth, lit_colour,
+                  lit * fade(depth) * (0.66 + 0.34 * streak),
+                  (2.4 + 1.2 * streak) * unit)
+      px, py, pz = x, y, z
     end
 
     local x, y, z, s = project(radius * cos(angle), 0, radius * sin(angle))
-    put_dot(x, y, z, bead_size * s * unit, lit_colour, opacity_live * fade(z), 0.8)
+    put_dot(x, y, z, bead_size * s * unit, lit_colour, lit * fade(z), 0.8)
   end
 end
 
@@ -767,18 +905,42 @@ end
 -- computing it from the 3D tangent would ignore perspective.
 --
 -- This is where the date is actually read. The current entry is drawn larger,
--- bold and in the accent colour, so month, day and weekday stand out of their
+-- bold and in today's colour, so month, day and weekday stand out of their
 -- rings at a glance and the middle of the widget is left to the clock alone.
 -- `count` can be shorter than `labels` -- February uses 28 of the 31 day
 -- strings -- so the divisions always match the month in front of you.
--- No label is drawn nearer the middle than this, in design units, so a hoop
--- turned edge-on cannot write its labels across the clock.
-local CLOCK_KEEPOUT, KEEPOUT_RAMP = 104, 44
+
+-- The clock keeps a box of its own, and a label fades only as it closes on
+-- that box. This used to be a circle of radius 104 round the middle, which is
+-- the wrong shape for a clock that is wide and short: a label sitting just below
+-- the numerals, nowhere near touching them, was inside it and vanished. The
+-- box is measured from the widest time the clock shows rather than the current
+-- one, so it does not shift as the minutes turn over.
+local CLOCK_SIZE, CLOCK_SAMPLE = 56, "00:00"
+-- How far outside the clock's box a label starts to fade, in design units.
+local KEEPOUT_RAMP = 16
+-- Today's labels are moved instead of faded, and kept this far off: pushed
+-- only to the edge of the box, a day number beside the clock read as part of
+-- the time.
+local LIVE_CLEARANCE = 32
+
+-- Half the clock's ink box, in pixels. It scales with the widget, so
+-- draw_function sets it every frame.
+local clock_half_w, clock_half_h = 0, 0
+
+-- How far a box centred on x, y lies from the clock's, along whichever axis
+-- separates the two; negative once they overlap.
+local function apart_from_clock(x, y, half_w, half_h)
+  return math.max(math.abs(x - centre_x) - (half_w + clock_half_w),
+                  math.abs(y - centre_y) - (half_h + clock_half_h))
+end
 
 local label_points = {}
 
 local function draw_hoop_labels(cr, hoop, t, radius, labels, count, current, size)
   set_model(hoop_matrix(hoop, t))
+
+  local ramp = KEEPOUT_RAMP * unit
 
   for i = 1, count do
     -- Half a division round, because a label names the sector that follows its
@@ -799,6 +961,7 @@ local function draw_hoop_labels(cr, hoop, t, radius, labels, count, current, siz
     local after = label_points[i % count + 1]
     local live = (i == current)
     local scale = (live and size * 1.4 or size) * point[4] * unit
+    local width, height = extent_for(cr, labels[i], scale, live)
 
     -- The tangent comes from the neighbours either side rather than from a
     -- second sample point: every anchor is projected already, so it is free,
@@ -817,25 +980,29 @@ local function draw_hoop_labels(cr, hoop, t, radius, labels, count, current, siz
     local room = 1
     if not live then
       local gap = sqrt((after[1] - point[1])^2 + (after[2] - point[2])^2)
-      room = clamp(gap / (extent_for(cr, labels[i], scale, false) * 1.35), 0, 1)
+      room = clamp(gap / (width * 1.35), 0, 1)
       room = room * room
     end
 
     -- The second part protects the clock, which a steeply tilted hoop would
-    -- otherwise run its labels straight across. The current value is not faded
-    -- out here but pushed out instead: fading it would mean that every time a
-    -- hoop came edge-on the one thing worth reading off it -- today's date --
-    -- was the thing that disappeared. Sliding it out along its own direction
-    -- from the middle keeps it on the hoop's projected line, which is where the
-    -- eye expects it.
+    -- otherwise run its labels straight across. What is compared is the
+    -- label's box, turned to its lean, against the clock's. The current value
+    -- is not faded out here but pushed out instead: fading it would mean that
+    -- every time a hoop came edge-on the one thing worth reading off it --
+    -- today's date -- was the thing that disappeared. Sliding it out along its
+    -- own direction from the middle keeps it on the hoop's projected line,
+    -- which is where the eye expects it.
     local x, y = point[1], point[2]
-    local dx, dy = x - centre_x, y - centre_y
-    local distance = sqrt(dx * dx + dy * dy)
+    local ca, sa = math.abs(cos(lean)), math.abs(sin(lean))
+    local half_w = (ca * width + sa * height) / 2
+    local half_h = (sa * width + ca * height) / 2
     local clear = 1
 
     if live then
-      local least = (CLOCK_KEEPOUT + KEEPOUT_RAMP * 0.5) * unit
-      if distance < least then
+      local gap = LIVE_CLEARANCE * unit
+      if apart_from_clock(x, y, half_w, half_h) < gap then
+        local dx, dy = x - centre_x, y - centre_y
+        local distance = sqrt(dx * dx + dy * dy)
         local ux, uy
         if distance > 1 then
           ux, uy = dx / distance, dy / distance
@@ -846,22 +1013,34 @@ local function draw_hoop_labels(cr, hoop, t, radius, labels, count, current, siz
           local along = sqrt(ax * ax + ay * ay)
           if along > 1 then ux, uy = ax / along, ay / along else ux, uy = 0, -1 end
         end
+        -- Out to where the line from the middle leaves the clock's box, grown
+        -- by this label and the gap, through whichever edge it meets first.
+        local least = math.min(
+          math.abs(ux) > 1e-6 and (clock_half_w + half_w + gap) / math.abs(ux) or math.huge,
+          math.abs(uy) > 1e-6 and (clock_half_h + half_h + gap) / math.abs(uy) or math.huge)
         x, y = centre_x + ux * least, centre_y + uy * least
       end
     else
-      clear = clamp((distance / unit - CLOCK_KEEPOUT) / KEEPOUT_RAMP, 0, 1)
+      clear = clamp(apart_from_clock(x, y, half_w, half_h) / ramp, 0, 1)
     end
 
-    local alpha = (live and opacity_live or opacity_label) * fade(point[3]) * room * clear
+    -- Text is not depth-faded. The far side of a hoop already recedes through
+    -- its line and its ticks, and the type shrinks with perspective; dimming
+    -- the words as well bought a little depth at the cost of the reading.
+    -- Today's month at the back of its hoop came out at about a quarter
+    -- strength, fainter than the orbiting cores in front of it, so the one
+    -- thing the hoop is there to say was the hardest thing on it to find.
+    local alpha = (live and OPACITY.today or OPACITY.labels) * room * clear
+    drawing = live and "today" or "labels"
     if alpha > 0.02 then
       -- The highlight belongs to the label rather than sitting beside it as a
       -- separate mark, so there is nothing on screen to mistake for a core: the
       -- thing that is lit up *is* the day, the month, the weekday.
       if live then
-        put_glow(x, y, point[3] + 1, scale * 2.1, ACCENT, 0.34 * fade(point[3]))
+        put_glow(x, y, point[3] + 1, scale * 2.1, INK.today, 0.34 * scale_of("today"))
       end
       put_label(x, y, point[3], labels[i], scale, lean,
-                live and ACCENT or BASE, alpha, live)
+                live and INK.today or INK.labels, alpha, live)
     end
   end
 end
@@ -875,9 +1054,22 @@ local screen = {}
 local function draw_cage(cr, t, hottest)
   local load = clamp(shown.cpu / 100, 0, 1)
   local radius = R_CAGE * (1 + 0.20 * load + 0.03 * sin(TAU * t / 6.3))
-  local colour = mix(SECOND, WARM, clamp((hottest - warm_above) /
-                                          math.max(max_temperature - warm_above, 1), 0, 1))
+  local heat = clamp((hottest - warm_above) / math.max(max_temperature - warm_above, 1), 0, 1)
 
+  -- The glow is drawn whether or not the cage is: with the cage switched off it
+  -- is the one thing left saying how hot the hottest core is.
+  if show_glow_now then
+    drawing = "glow"
+    -- A soft nucleus behind the numerals: almost all halo and hardly any disc,
+    -- so the clock reads against a glow rather than against a painted ball.
+    local x, y = centre_x, centre_y
+    put_glow(x, y, R_CAGE + 1, radius * 1.55 * unit, mix(INK.glow, INK.heat, heat),
+             (0.21 + 0.15 * load) * scale_of("glow"))
+  end
+  if not show_cage_now then return end
+
+  drawing = "cage"
+  local colour = mix(INK.cage, INK.heat, heat)
   set_model(mat_mul(rot_y(t * 0.28 * motion), rot_x(t * 0.17 * motion + 0.6)))
 
   for i, v in ipairs(CAGE_VERTS) do
@@ -891,17 +1083,14 @@ local function draw_cage(cr, t, hottest)
     local a, b = screen[e[1]], screen[e[2]]
     local depth = (a[3] + b[3]) / 2
     put_segment(a[1], a[2], b[1], b[2], depth, colour,
-                (opacity_track * 1.45 + 0.16 * load) * fade_within(depth, radius), 1.0 * unit)
+                (0.16 * 1.45 + 0.16 * load) * scale_of("cage") * fade_within(depth, radius),
+                1.0 * unit)
   end
 
   for _, v in ipairs(screen) do
-    put_dot(v[1], v[2], v[3], 1.4 * v[4] * unit, colour, 0.42 * fade_within(v[3], radius), 0)
+    put_dot(v[1], v[2], v[3], 1.4 * v[4] * unit, colour,
+            0.42 * scale_of("cage") * fade_within(v[3], radius), 0)
   end
-
-  -- A soft nucleus behind the numerals: almost all halo and hardly any disc, so
-  -- the clock reads against a glow rather than against a painted ball.
-  local x, y = project(0, 0, 0)
-  put_glow(x, y, R_CAGE + 1, radius * 1.55 * unit, colour, 0.21 + 0.15 * load)
 end
 
 ---------------- ORBITING BODIES ----------------
@@ -933,6 +1122,7 @@ end
 
 local function draw_bodies(t, dt, count)
   ensure_orbits(count)
+  drawing = "cores"
 
   for i = 1, count do
     local orbit = orbits[i]
@@ -944,7 +1134,7 @@ local function draw_bodies(t, dt, count)
     orbit.phase = (orbit.phase + omega * dt) % TAU
 
     set_model(orbit.plane)
-    local colour = heat_color(temperature)
+    local colour = heat_color(temperature, INK.cores)
     local radius = orbit.radius
 
     -- Tail length follows speed, so a hot core draws a long comet and an idle
@@ -955,11 +1145,11 @@ local function draw_bodies(t, dt, count)
       local a = orbit.phase - span * k / TAIL
       local x, y, z, s = project(radius * cos(a), 0, radius * sin(a))
       put_dot(x, y, z, 2.0 * s * unit, colour,
-              opacity_live * fade(z) * (1 - k / (TAIL + 1)) * 0.55, 0)
+              OPACITY.cores * fade(z) * (1 - k / (TAIL + 1)) * 0.55, 0)
     end
 
     local x, y, z, s = project(radius * cos(orbit.phase), 0, radius * sin(orbit.phase))
-    put_dot(x, y, z, 2.9 * s * unit, colour, opacity_live * fade(z), 0.8 + 0.6 * heat)
+    put_dot(x, y, z, 2.9 * s * unit, colour, OPACITY.cores * fade(z), 0.8 + 0.6 * heat)
   end
 end
 
@@ -992,9 +1182,11 @@ end
 local function draw_dust(t)
   ensure_dust()
   set_model(rot_y(t * 0.04 * motion))
+  drawing = "dust"
   for _, d in ipairs(dust) do
     local x, y, z, s = project(d[1], d[2], d[3])
-    put_dot(x, y, z, 1.1 * d[4] * s * unit, BASE, 0.30 * d[4] * fade(z), 0)
+    put_dot(x, y, z, (dust_size or 1.1) * d[4] * s * unit, INK.dust,
+            OPACITY.dust * d[4] * fade(z), 0)
   end
 end
 
@@ -1016,20 +1208,24 @@ end
 -- Angular gap left between one readout and the next.
 local READOUT_GAP = 16 * RAD
 
-local function draw_readout(cr, middle, span, fraction, colour, caption, value)
+local function draw_readout(cr, middle, span, fraction, colour, caption, value, name)
   local radius = R_READOUT * unit
   local from = middle - span / 2
+  -- Drawn straight to cairo rather than through the painter, so a ghost is
+  -- worked out here; outside the editor's preview every factor is 1.
+  local mine, tracks, captions = emphasis(name), emphasis("tracks"), emphasis("captions")
 
   cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND)
   cairo_set_line_width(cr, 3.5 * unit)
 
-  cairo_set_source_rgba(cr, BASE[1], BASE[2], BASE[3], opacity_track)
+  cairo_set_source_rgba(cr, INK.tracks[1], INK.tracks[2], INK.tracks[3],
+                        share(OPACITY.tracks, tracks))
   cairo_new_path(cr)
   cairo_arc(cr, centre_x, centre_y, radius, from, from + span)
   cairo_stroke(cr)
 
   if fraction > 0 then
-    cairo_set_source_rgba(cr, colour[1], colour[2], colour[3], opacity_live)
+    cairo_set_source_rgba(cr, colour[1], colour[2], colour[3], share(OPACITY[name], mine))
     cairo_new_path(cr)
     cairo_arc(cr, centre_x, centre_y, radius, from, from + span * clamp(fraction, 0, 1))
     cairo_stroke(cr)
@@ -1037,17 +1233,20 @@ local function draw_readout(cr, middle, span, fraction, colour, caption, value)
 
   local tx = centre_x + cos(middle) * (R_READOUT + 34) * unit
   local ty = centre_y + sin(middle) * (R_READOUT + 34) * unit
-  text_at(cr, tx, ty - 9 * unit, caption, 10 * unit, BASE, opacity_label)
-  text_at(cr, tx, ty + 15 * unit, value, 21 * unit, colour, opacity_text, true)
+  text_at(cr, tx, ty - 9 * unit, caption, 10 * unit, INK.captions,
+          share(OPACITY.captions, captions))
+  text_at(cr, tx, ty + 15 * unit, value, 21 * unit, colour,
+          share(0.92 * scale_of(name), mine), true)
 end
 
 -- Reused between frames rather than rebuilt, like everything else here.
 local readouts = {}
 
-local function readout(index, caption, fraction, colour, value)
+local function readout(index, caption, fraction, colour, value, name)
   local entry = readouts[index]
   if entry == nil then entry = {}; readouts[index] = entry end
   entry.caption, entry.fraction, entry.colour, entry.value = caption, fraction, colour, value
+  entry.name = name
 end
 
 -- Both filesystems get a slot, and the GPU keeps its own when there is a sensor
@@ -1055,33 +1254,34 @@ end
 -- evenly from the top rather than pinned to the four corners, which is what
 -- lets the count vary without the layout having to be redesigned for each one.
 --
--- Colour says what kind of thing a readout is, never where it sits: ACCENT for
--- what the machine is doing this second, SECOND for how full its disks are, and
--- the heat ramp for anything measured in degrees. So CPU and MEM match each
--- other, ROOT and HOME match each other, and the GPU is the only one that
--- changes colour as its value moves.
+-- As shipped, colour says what kind of thing a readout is, never where it sits:
+-- cyan for what the machine is doing this second, raspberry for how full its
+-- disks are, and the heat ramp for anything measured in degrees. So CPU and MEM
+-- match each other, ROOT and HOME match each other, and the GPU is the only one
+-- that changes colour as its value moves. Each still has a setting of its own,
+-- so a pair can be split.
 local function draw_readouts(cr)
   local count = 0
 
   count = count + 1
-  readout(count, "CPU", shown.cpu / 100, ACCENT, floor(shown.cpu + 0.5) .. "%")
+  readout(count, "CPU", shown.cpu / 100, INK.cpu, floor(shown.cpu + 0.5) .. "%", "cpu")
   count = count + 1
-  readout(count, "MEM", shown.mem / 100, ACCENT, floor(shown.mem + 0.5) .. "%")
+  readout(count, "MEM", shown.mem / 100, INK.memory, floor(shown.mem + 0.5) .. "%", "memory")
   if show_gpu then
     count = count + 1
-    readout(count, "GPU", shown.gpu / max_temperature, heat_color(shown.gpu),
-            floor(shown.gpu + 0.5) .. "°")
+    readout(count, "GPU", shown.gpu / max_temperature, heat_color(shown.gpu, INK.gpu),
+            floor(shown.gpu + 0.5) .. "°C", "gpu")
   end
   count = count + 1
-  readout(count, "ROOT", shown.root / 100, SECOND, floor(shown.root + 0.5) .. "%")
+  readout(count, "ROOT", shown.root / 100, INK.root, floor(shown.root + 0.5) .. "%", "root")
   count = count + 1
-  readout(count, "HOME", shown.home / 100, SECOND, floor(shown.home + 0.5) .. "%")
+  readout(count, "HOME", shown.home / 100, INK.home, floor(shown.home + 0.5) .. "%", "home")
 
   local step = TAU / count
   for i = 1, count do
     local entry = readouts[i]
     draw_readout(cr, -pi / 2 + (i - 1) * step, step - READOUT_GAP,
-                 entry.fraction, entry.colour, entry.caption, entry.value)
+                 entry.fraction, entry.colour, entry.caption, entry.value, entry.name)
   end
 end
 
@@ -1089,8 +1289,12 @@ end
 
 -- Every length above is written against this width and multiplied by `unit`.
 local BASE_DIAMETER = 640
--- What the widget actually spans, readout captions and values included.
-local CONTENT_DIAMETER = 2 * (R_READOUT + 52)
+-- What the widget actually spans. The readout captions and values reach well
+-- outside the hoops. Without them the outermost ink is the glow behind this
+-- month's label, which reaches about 335 units when the label sits at the
+-- widest point of its hoop -- measured from renders over a full turn of the
+-- camera, since perspective takes it past the hoop's own radius.
+local CONTENT_DIAMETER = show_readouts_now and 2 * (R_READOUT + 52) or 2 * 340
 
 local warned = false
 local function warn_once(available, needed)
@@ -1108,17 +1312,22 @@ local function draw_function(cr, now, dt)
   centre_x, centre_y = width / 2, height / 2
 
   -- widget_size is the diameter of the outermost hoop, but the readout values
-  -- are written outside it, so what has to fit is wider than the number the
-  -- user set.
+  -- are written outside it, so when they are shown what has to fit is wider
+  -- than the number the user set.
   local needed = widget_size * CONTENT_DIAMETER / BASE_DIAMETER
   local available = math.min(width, height)
   local fit = math.min(1, available / needed)
   if fit < 0.99 then warn_once(available, needed) end
   unit = widget_size / BASE_DIAMETER * fit
 
-  local bodies = body_count()
-  sample(now, bodies)
-  ease_all(dt, bodies)
+  -- With the monitoring off nothing is sampled: no ${...} is parsed and hwmon
+  -- is never scanned, so the clock and calendar cost only their drawing.
+  local bodies = 0
+  if show_monitoring_now then
+    bodies = body_count()
+    sample(now, bodies)
+    ease_all(dt, bodies)
+  end
 
   -- Animation runs on `t`, which is wall time scaled by `motion`, so setting
   -- motion to 0 parks the assembly without stopping the clock.
@@ -1146,33 +1355,43 @@ local function draw_function(cr, now, dt)
   -- order reads best here and land in the right place anyway.
   if show_dust_now then draw_dust(t) end
 
+  -- The clock is drawn centred on the middle of the widget, ink box and all,
+  -- and that box is what the labels are kept off.
+  local clock_w, clock_h = extent_for(cr, CLOCK_SAMPLE, CLOCK_SIZE * unit, false)
+  clock_half_w, clock_half_h = clock_w / 2, clock_h / 2
+
   -- Monday-first, to match WEEKDAYS; os.date numbers Sunday 1.
   local weekday = (when.wday == 1) and 7 or (when.wday - 1)
 
   draw_hoop(HOOPS[1], t, 12, (when.month - 1) + (when.day - 1 + day_fraction) / days,
-            ACCENT, 3.4, 9, 7, true)
+            INK.today, 3.4, 9, 7, true)
   draw_hoop_labels(cr, HOOPS[1], t, L_YEAR, MONTHS, 12, when.month, 11.5)
 
-  draw_hoop(HOOPS[2], t, days, (when.day - 1) + day_fraction, ACCENT, 3.2, 7, 9, true)
+  draw_hoop(HOOPS[2], t, days, (when.day - 1) + day_fraction, INK.today, 3.2, 7, 9, true)
   draw_hoop_labels(cr, HOOPS[2], t, L_MONTH, DAYS, days, when.day, 10)
 
-  draw_hoop(HOOPS[3], t, 7, (weekday - 1) + day_fraction, ACCENT, 3.4, 8, 11, true)
+  draw_hoop(HOOPS[3], t, 7, (weekday - 1) + day_fraction, INK.today, 3.4, 8, 11, true)
   draw_hoop_labels(cr, HOOPS[3], t, L_DOW, WEEKDAYS, 7, weekday, 12)
 
   -- The seconds hoop carries no labels: it is the one element moving fast
   -- enough to watch, and is there to be read as a sweep rather than a value.
-  draw_hoop(HOOPS[4], t, 60, seconds, SECOND, 3.4, 5, 26, false)
+  if show_seconds_now then
+    draw_hoop(HOOPS[4], t, 60, seconds, INK.seconds, 3.4, 5, 26, false)
+  end
 
-  draw_cage(cr, t, hottest)
-  draw_bodies(t, dt, bodies)
+  if show_monitoring_now then
+    draw_cage(cr, t, hottest)
+    draw_bodies(t, dt, bodies)
+  end
 
   -- The clock sits on the plane through the centre of the scene, so the near
   -- half of the cage and any hoop swinging towards the eye cross in front of
   -- the numerals while the far half stays behind them. That one line is the
   -- whole reason the renderer sorts text along with everything else.
   local x, y = project(0, 0, 0)
-  put_label(x, y, 0, os.date("%H:%M", floor(now)), 56 * unit, 0,
-            BASE, opacity_text, false)
+  drawing = "clock"
+  put_label(x, y, 0, os.date("%H:%M", floor(now)), CLOCK_SIZE * unit, 0,
+            INK.clock, OPACITY.clock, false)
 
   flush(cr)
 
