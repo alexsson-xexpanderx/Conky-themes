@@ -292,11 +292,17 @@ in the editor. **And its own opacity** — `opacity_<element>`, read into `OPACI
 which is a colour other elements turn rather than something drawn. They replaced four shared
 opacity tiers. The setting is the element's main part; any other part (a readout's value, the
 cage's vertices, the seconds hoop's unlit ring) is written as its designed alpha times
-`scale_of(element)`, which is `OPACITY / DESIGNED` and so exactly 1 at the shipped value — the
-defaults render pixel-identically to the tiers they replaced, checked with fixed sensors. As shipped they come from a palette of five and colour encodes kind, not position:
-white for the dials, cyan for what is happening now (today, CPU, MEM), raspberry for what is stored
-or standing (seconds, cage, glow, ROOT, HOME), violet for the cores and the GPU while cool, pink for
-heat. The editor's presets keep to that by giving each element the palette colour its role names.
+`scale_of(element)`, which is `OPACITY / DESIGNED` and so exactly 1 at the designed value — at
+those values they rendered pixel-identically to the tiers they replaced, checked with fixed
+sensors. As shipped the colours follow Catppuccin Mocha, chosen when the user asked for the widget
+to be made beautiful: every colour at a similar soft brightness so nothing vibrates on a dark
+desktop, cool colours for the time (clock, today, seconds, rings) and warm for the machine (mauve
+cores, cream readouts, rose heat). The readouts are one colour nothing else uses because the user
+wanted them told apart from the cores. The clock has its own face, `font_clock` (Noto Sans Light);
+`extent_for` keys its cache on the family too, and the clock's keep-out box is measured in the
+clock's face, since a narrow light clock kept clear by the box of a wide regular one would push
+labels away for nothing. The editor's presets are still five-colour palettes by kind, giving each
+element the palette colour its role names.
 `heat_color(temperature, cool)` blends an element's own cool colour into `HTML_heat`; the cage and
 the glow blend towards the same heat by the hottest core. The cores were given a colour of their
 own because at idle two dozen dots in today's cyan made the date the hard thing to find, so a

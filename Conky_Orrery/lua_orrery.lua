@@ -82,62 +82,67 @@ show_cage = "No"
 show_glow = "No"
 
 -- Colours, one for every element, so any of them can be changed on its own --
--- orrery_colors.py edits them all with a live preview. As shipped they are a
--- palette of five, where a colour means a kind of thing and not a place:
--- white for the dials, cyan for what is happening now, raspberry for what is
--- stored or standing, violet for the cores and pink for heat. The editor's
--- presets keep to that; changing a single element is entirely up to you.
+-- orrery_colors.py edits them all with a live preview. As shipped they follow
+-- the Catppuccin palette, which keeps every colour at a similar soft brightness
+-- so that nothing vibrates against a dark desktop, and colour temperature tells
+-- the widget's two jobs apart: cool for the time (a soft white clock, sky blue
+-- for today, blue for the seconds), warm for the machine (mauve cores, cream
+-- readouts, rose for heat). Changing a single element is entirely up to you.
 
 -- The clock and the calendar
-HTML_clock    = "#DCE6F5"   -- the time in the middle
-HTML_rings    = "#DCE6F5"   -- the month, day and weekday hoops and their ticks
-HTML_labels   = "#DCE6F5"   -- month names, day numbers and weekdays
-HTML_today    = "#3DDCFF"   -- today's month, day and weekday, and their glow
-HTML_seconds  = "#bf4272"   -- the seconds hoop and its sweeping head
-HTML_dust     = "#DCE6F5"   -- the drifting specks
+HTML_clock    = "#E4E8F7"   -- the time in the middle
+HTML_rings    = "#A6ADC8"   -- the month, day and weekday hoops and their ticks
+HTML_labels   = "#BAC2DE"   -- month names, day numbers and weekdays
+HTML_today    = "#8BE3F7"   -- today's month, day and weekday, and their glow
+HTML_seconds  = "#89B4FA"   -- the seconds hoop and its sweeping head
+HTML_dust     = "#BAC2DE"   -- the drifting specks
 
 -- The machine
-HTML_cores    = "#9C7CFF"   -- the orbiting cores, while they run cool
-HTML_heat     = "#FF5F8D"   -- what cores, cage, glow and GPU turn when hot
-HTML_cage     = "#bf4272"   -- the cage round the clock
-HTML_glow     = "#bf4272"   -- the glow behind the clock
+HTML_cores    = "#CBA6F7"   -- the orbiting cores, while they run cool
+HTML_heat     = "#F38BA8"   -- what cores, cage, glow and GPU turn when hot
+HTML_cage     = "#B4BEFE"   -- the cage round the clock
+HTML_glow     = "#B4BEFE"   -- the glow behind the clock
 
 -- The readouts
-HTML_tracks   = "#DCE6F5"   -- the unlit part of each arc
-HTML_captions = "#DCE6F5"   -- the names above the values
-HTML_cpu      = "#7CFFAC"
-HTML_memory   = "#7CFFAC"
-HTML_gpu      = "#7CFFAC"   -- while it runs cool
-HTML_root     = "#7CFFAC"
-HTML_home     = "#7CFFAC"
+HTML_tracks   = "#A6ADC8"   -- the unlit part of each arc
+HTML_captions = "#A6ADC8"   -- the names above the values
+HTML_cpu      = "#F9E2AF"
+HTML_memory   = "#F9E2AF"
+HTML_gpu      = "#F9E2AF"   -- while it runs cool
+HTML_root     = "#F9E2AF"
+HTML_home     = "#F9E2AF"
 
 -- Opacity, 0 to 1: how solidly each element is drawn, by the same names as the
 -- colours, and edited next to them in orrery_colors.py. Heat has none of its
 -- own; it is a colour other elements turn. Where an element has more than one
 -- part -- a readout's arc and its value, the seconds hoop's lit arc and the
 -- rest of it -- this is its main part, and the others keep their share of it.
-opacity_clock    = 0.92
-opacity_rings    = 0.16
-opacity_labels   = 0.52
+opacity_clock    = 0.95
+opacity_rings    = 0.18
+opacity_labels   = 0.55
 opacity_today    = 1.00
-opacity_seconds  = 1.00
+opacity_seconds  = 0.85
 opacity_dust     = 0.30
-opacity_cores    = 1.00
+opacity_cores    = 0.90
 opacity_cage     = 0.16
 opacity_glow     = 0.21
-opacity_tracks   = 0.16
-opacity_captions = 0.52
-opacity_cpu      = 0.35
-opacity_memory   = 0.35
-opacity_gpu      = 0.35
-opacity_root     = 0.35
-opacity_home     = 0.35
+opacity_tracks   = 0.18
+opacity_captions = 0.55
+opacity_cpu      = 0.55
+opacity_memory   = 0.55
+opacity_gpu      = 0.55
+opacity_root     = 0.55
+opacity_home     = 0.55
 
 -- Depth cueing: how much of its brightness the far side of the assembly keeps.
 -- 1 disables the effect and flattens the picture; 0.15 is a deep fade.
 depth_fade = 0.22
 
-font_name = "DejaVu Sans"
+font_name = "Noto Sans"
+-- The clock's own family, so it can be lighter than the small type around it:
+-- at 56 units a light weight reads as elegant where a regular one reads as
+-- heavy. Any family fontconfig knows will do.
+font_clock = "Noto Sans Light"
 
 -- Scaled relative position from middle. Positive x and y means left and up,
 -- negative x and y means right and down.
@@ -585,13 +590,14 @@ local function put_glow(x, y, depth, radius, colour, alpha)
   return p
 end
 
-local function put_label(x, y, depth, text, size, angle, colour, alpha, bold)
+local function put_label(x, y, depth, text, size, angle, colour, alpha, bold, family)
   local p = slot(depth)
   p.kind = LABEL
   p.x1, p.y1, p.w = x, y, size
   p.text, p.rot = text, angle or 0
   p.r, p.g, p.b, p.a = colour[1], colour[2], colour[3], alpha
   p.bold = bold or false
+  p.family = family
   return p
 end
 
@@ -611,8 +617,8 @@ local function measure(cr, text)
   return extents
 end
 
-local function select_font(cr, size, bold)
-  cairo_select_font_face(cr, font_name, CAIRO_FONT_SLANT_NORMAL,
+local function select_font(cr, size, bold, family)
+  cairo_select_font_face(cr, family or font_name, CAIRO_FONT_SLANT_NORMAL,
                          bold and CAIRO_FONT_WEIGHT_BOLD or CAIRO_FONT_WEIGHT_NORMAL)
   cairo_set_font_size(cr, size)
 end
@@ -626,11 +632,11 @@ end
 local REFERENCE_SIZE = 96
 local extent_cache = {}
 
-local function extent_for(cr, text, size, bold)
-  local key = (bold and "b\0" or "n\0") .. text
+local function extent_for(cr, text, size, bold, family)
+  local key = (family or "") .. (bold and "\0b\0" or "\0n\0") .. text
   local cached = extent_cache[key]
   if cached == nil then
-    select_font(cr, REFERENCE_SIZE, bold)
+    select_font(cr, REFERENCE_SIZE, bold, family)
     local e = measure(cr, text)
     cached = {e.width / REFERENCE_SIZE, e.height / REFERENCE_SIZE, e.x_bearing / REFERENCE_SIZE}
     extent_cache[key] = cached
@@ -676,8 +682,8 @@ local function paint_primitive(cr, p)
     cairo_pattern_destroy(g)
 
   else
-    local width, height, bearing = extent_for(cr, p.text, p.w, p.bold)
-    select_font(cr, p.w, p.bold)
+    local width, height, bearing = extent_for(cr, p.text, p.w, p.bold, p.family)
+    select_font(cr, p.w, p.bold, p.family)
     cairo_save(cr)
     cairo_translate(cr, p.x1, p.y1)
     if p.rot ~= 0 then cairo_rotate(cr, p.rot) end
@@ -1254,12 +1260,10 @@ end
 -- evenly from the top rather than pinned to the four corners, which is what
 -- lets the count vary without the layout having to be redesigned for each one.
 --
--- As shipped, colour says what kind of thing a readout is, never where it sits:
--- cyan for what the machine is doing this second, raspberry for how full its
--- disks are, and the heat ramp for anything measured in degrees. So CPU and MEM
--- match each other, ROOT and HOME match each other, and the GPU is the only one
--- that changes colour as its value moves. Each still has a setting of its own,
--- so a pair can be split.
+-- As shipped, the readouts share one warm cream that nothing else in the widget
+-- uses, so the machine's numbers stand apart from the clock and the calendar.
+-- The GPU is the only one that changes colour as its value moves, riding the
+-- heat ramp. Each has a setting of its own, so any of them can be split off.
 local function draw_readouts(cr)
   local count = 0
 
@@ -1357,7 +1361,7 @@ local function draw_function(cr, now, dt)
 
   -- The clock is drawn centred on the middle of the widget, ink box and all,
   -- and that box is what the labels are kept off.
-  local clock_w, clock_h = extent_for(cr, CLOCK_SAMPLE, CLOCK_SIZE * unit, false)
+  local clock_w, clock_h = extent_for(cr, CLOCK_SAMPLE, CLOCK_SIZE * unit, false, font_clock)
   clock_half_w, clock_half_h = clock_w / 2, clock_h / 2
 
   -- Monday-first, to match WEEKDAYS; os.date numbers Sunday 1.
@@ -1391,7 +1395,7 @@ local function draw_function(cr, now, dt)
   local x, y = project(0, 0, 0)
   drawing = "clock"
   put_label(x, y, 0, os.date("%H:%M", floor(now)), CLOCK_SIZE * unit, 0,
-            INK.clock, OPACITY.clock, false)
+            INK.clock, OPACITY.clock, false, font_clock)
 
   flush(cr)
 

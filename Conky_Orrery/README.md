@@ -106,7 +106,7 @@ Around the clock is a geodesic cage that swells with CPU load and takes its
 colour from the hottest core. Inside it, one body per CPU core circles on its
 own inclined orbit, faster the hotter that core runs, trailing a comet tail
 whose length follows its speed. **A round glowing dot is a CPU core and nothing
-else.** The cores have a colour of their own, violet unless you change it, so
+else.** The cores have a colour of their own, mauve unless you change it, so
 they cannot be mistaken for the clock or for today's date; a core only turns
 towards the heat colour once it runs hot.
 
@@ -114,12 +114,16 @@ Five arcs sit around the outside — CPU, memory, GPU temperature, root and home
 spaced evenly from the top. With `enable_graphic_card_temperature_sensor` set to
 `No` there are four and they re-space themselves.
 
-As shipped, colour says what kind of thing a readout is, never where it sits.
-CPU and memory share cyan because both are what the machine is doing this
-second; root and home share raspberry because both are how full a disk is; the
+As shipped, the readouts share one warm cream that nothing else in the widget
+uses, so the machine's numbers stand apart from the clock and the calendar; the
 GPU is the only one that changes colour as its value moves, riding the same heat
-ramp as the orbiting cores. Every readout has a colour setting of its own all the
-same, so any pair can be split.
+ramp as the orbiting cores. Every readout has a colour setting of its own all
+the same.
+
+The colours as a whole follow the Catppuccin palette, which keeps every colour
+at a similar soft brightness so nothing vibrates against a dark desktop: cool
+colours for the time — a soft white clock in a light face, sky blue for today,
+blue for the seconds — and warm ones for the machine.
 
 ## Changing the colours
 
@@ -220,7 +224,8 @@ All of them live in the `USER CONFIGURATION` block at the top of
 | `HTML_*` | — | seventeen colours, one per element; easiest changed in `orrery_colors.py` |
 | `opacity_*` | — | one per element (all but Heat): how solidly it is drawn, 0 to 1 |
 | `depth_fade` | 0.22 | how much brightness the far side of the rings, cage and cores keeps; 1 flattens it. Text is never dimmed |
-| `font_name` | DejaVu Sans | any family fontconfig knows |
+| `font_name` | Noto Sans | any family fontconfig knows |
+| `font_clock` | Noto Sans Light | the clock's own family; a light weight suits its size |
 
 `widget_size` is the outermost hoop, but the readout values are written outside
 it, so the widget really spans about 15% more than that — about 6% more without
