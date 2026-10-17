@@ -678,7 +678,8 @@ wallpaper at full size (888x996). Stills for posting live in `Conky-Mirage/previ
 looks and all twelve wallpapers on the desktop, in several widths; `close-ups/` crops to the
 widget). The user wants such files in the repo, not in ~/Pictures. Each wallpaper is held 105 frames, because the widget takes about
 2.6s to finish recolouring after a change (half a second to notice, a poll, the 1.6s fade);
-at 88 it never settled. `av1_vaapi` ignores `-qp`: use `-rc_mode CQP -global_quality 90`.
+at 88 it never settled. `av1_vaapi` ignores `-qp` (use `-rc_mode CQP -global_quality 90`) and
+pads the height to a multiple of 16 with black rows, so the webm is cropped to 1920x800.
 
 `mirage_settings.py` follows the orrery editor's conventions (canvas-drawn controls, candidate
 settings never written until Save, unchanged values left byte-identical, `.bak` copies,
