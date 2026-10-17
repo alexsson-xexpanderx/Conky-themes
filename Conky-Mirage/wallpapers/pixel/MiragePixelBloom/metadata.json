@@ -1,0 +1,12 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "alexsson"
+            }
+        ],
+        "Id": "MiragePixelBloom",
+        "License": "CC-BY-SA-4.0",
+        "Name": "Mirage Pixel Bloom"
+    }
+}

@@ -1,0 +1,12 @@
+{
+    "KPlugin": {
+        "Authors": [
+            {
+                "Name": "alexsson"
+            }
+        ],
+        "Id": "MirageSolidPines",
+        "License": "CC-BY-SA-4.0",
+        "Name": "Mirage Solid Pines"
+    }
+}

@@ -1,3 +1,7 @@
+<b>Conky-Mirage (frosted glass cut from your wallpaper)</b>
+
+[![Conky Mirage](Conky-Mirage/screenshot.png)](Conky-Mirage)
+
 <b>conky-drawer-interactive (https://github.com/xexpanderx/conky-drawer-interactive)</b>
 
 ![alt tag](https://raw.githubusercontent.com/xexpanderx/conky-drawer-interactive/master/screenshot.png)

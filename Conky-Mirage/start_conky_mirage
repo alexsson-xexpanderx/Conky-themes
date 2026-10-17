@@ -1,0 +1,106 @@
+--[[
+  Conky Mirage: how big the widget is and where it goes. The widget itself is
+  drawn by mirage.lua. The easiest way to change these is ./mirage_settings.py.
+
+  Start it with:  conky -c /path/to/Conky-Mirage/start_conky_mirage
+]]
+
+-- How big it is. "auto" picks a size for your screen. Or a number: 1.0 is the
+-- normal size, 1.2 is a fifth bigger.
+local scale = "auto"
+
+-- Where it goes: top_left, top_right, bottom_left, bottom_right, middle_left,
+-- middle_right and so on, and how far from the edge of the screen, in pixels.
+local position = 'top_right'
+local margin_x, margin_y = 40, 40
+
+-- Frames per second. Set target_fps in mirage.lua to the same number.
+local fps = 10
+
+-- The widget's normal size. mirage_settings.py fills this in for you.
+local base_width, base_height = 816, 906
+
+---------------------------------------------------------------------------
+
+local function command(text)
+    local pipe = io.popen(text .. " 2>/dev/null")
+    if not pipe then return "" end
+    local out = pipe:read("a") or ""
+    pipe:close()
+    return out
+end
+
+-- The height of the monitor the widget will land on: the primary one.
+local function screen_height()
+    local listing = command("xrandr --listmonitors")
+    local primary = listing:match("%+%*%S+%s+%d+/%d+x(%d+)/")
+    local first = listing:match("%d+/%d+x(%d+)/")
+    return tonumber(primary or first)
+end
+
+if scale == "auto" then
+    local h = screen_height() or 1440
+    scale = math.min(math.max(h / 1440, 0.85), (h - 80) / base_height)
+end
+scale = math.max(0.45, math.min(tonumber(scale) or 1, 3))
+
+local width  = math.floor(base_width * scale + 0.5)
+local height = math.floor(base_height * scale + 0.5)
+
+-- Transparency moved twice: conky 1.24 removed own_window_argb_visual (ARGB is
+-- always on when a compositor runs) and 1.25 renamed own_window_colour. Ask
+-- the binary which one it is rather than leave a warning on every launch.
+local major, minor = command("conky --version"):match("conky (%d+)%.(%d+)")
+local version = (tonumber(major) or 1) * 100 + (tonumber(minor) or 25)
+
+conky.config = {
+    -- X11, through XWayland on a Wayland desktop. conky 1.25 picks Wayland by
+    -- default there, where the window has no position the helper can read to
+    -- line the glass up with the wallpaper.
+    output_backend = 'x11',
+
+    update_interval = 1 / fps,
+    double_buffer = true,
+    no_buffers = true,
+    override_utf8_locale = true,
+    text_buffer_size = 2048,
+    imlib_cache_size = 0,
+
+    own_window = true,
+    -- mirage.py finds the window on screen by this title.
+    own_window_title = 'conky-mirage',
+    own_window_class = 'conky-mirage',
+    own_window_type = 'normal',
+    own_window_hints = 'undecorated,below,sticky,skip_taskbar,skip_pager',
+
+    border_width = 0,
+    border_inner_margin = 0,
+    border_outer_margin = 0,
+
+    minimum_width = width,
+    maximum_width = width,
+    minimum_height = height,
+
+    alignment = position,
+    gap_x = math.floor(margin_x * scale + 0.5),
+    gap_y = math.floor(margin_y * scale + 0.5),
+
+    draw_shades = false,
+    draw_outline = false,
+    draw_borders = false,
+    draw_graph_borders = false,
+
+    lua_load = 'mirage.lua',
+    lua_draw_hook_pre = 'mirage',
+}
+
+if version >= 125 then
+    conky.config.own_window_color = '#00000000'
+elseif version >= 124 then
+    conky.config.own_window_colour = '#00000000'
+else
+    conky.config.own_window_argb_visual = true
+    conky.config.own_window_transparent = true
+end
+
+conky.text = [[]]

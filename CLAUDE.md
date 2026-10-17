@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A collection of four independent Conky desktop-widget themes. There is no build system, package
+A collection of five independent Conky desktop-widget themes. There is no build system, package
 manager, test suite, or linter — each theme is a Conky config plus a Lua script that draws with
 cairo, installed by copying files into `~/.conky/`.
 
@@ -12,11 +12,27 @@ cairo, installed by copying files into `~/.conky/`.
 - `Conky-Revisited-2/` — battery/disk/CPU/RAM panel, in four layout variants
 - `Conky-Calendar-Extra/` — circular calendar/clock + per-core CPU temperatures, in two looks
 - `Conky_Orrery/` — animated software-3D armillary clock, plus a tkinter colour editor with a
-  live preview. Grew out of Conky-Calendar-Extra and still shares its sensor code; it is the
-  only theme here that is not installed into `~/.conky/` and the only one with a GUI.
+  live preview. Grew out of Conky-Calendar-Extra and still shares its sensor code. It runs in
+  place rather than being installed into `~/.conky/`.
+- `Conky-Mirage/` — a bento of frosted-glass tiles (clock, weather now / 24h / 7 days, wind,
+  humidity, UV, air quality, sun and moon, system) whose glass and palette are rendered from the
+  wallpaper actually on screen. Lua paints; a Python helper (`mirage.py`, Pillow) finds the
+  wallpaper, renders the glass and fetches Open-Meteo weather (no API key). Runs in place, like
+  the orrery, and like it has a tkinter editor with a live preview (`mirage_settings.py`, for
+  sizes and placement). `wallpapers/` holds twelve wallpapers drawn for its four looks.
 
 The top-level `README.md` also advertises two themes that live in *other* repositories
 (`conky-drawer-interactive`, `conky-pywal`) — they are not in this tree.
+
+## Writing for users
+
+Anything a user reads -- READMEs, GUI labels, tooltips, status messages, the comments in a
+USER CONFIGURATION block, errors a widget prints -- is short, plain and sounds like a person
+wrote it. No jargon a user would have to translate ("scale 1", "base size", "flex", "render",
+"helper"), no em-dash asides, no bold-led bullet lists of features. Say what a control does
+in the words someone would use to ask about it: "Space between the boxes", not "tile gap".
+The user asked for this explicitly after the first versions of Mirage's README and settings
+window read as machine-written. Technical detail belongs here, in CLAUDE.md, not there.
 
 ## Install and run
 
@@ -39,11 +55,16 @@ cd Conky-Calendar-Extra/conky && conky -c start_conky
 cd Conky_Orrery && conky -c start_conky_orrery
 ```
 
+```bash
+conky -c /abs/path/Conky-Mirage/start_conky_mirage
+```
+
 `Conky-Calendar-Extra` has no installer. Its `lua_load` is relative, but conky resolves that
 against the **config file's own directory**, not the working directory — so `conky -c
 /abs/path/start_conky` works from anywhere, while copying the config away from its `.lua` breaks it.
 `start_conky_modernized` is the restyled variant. The same applies to `Conky_Orrery`, whose
-`start_conky_orrery` and `lua_orrery.lua` must stay in the same directory.
+`start_conky_orrery` and `lua_orrery.lua` must stay in the same directory, and to `Conky-Mirage`,
+whose `start_conky_mirage`, `mirage.lua` and `mirage.py` must.
 
 ## The edit/run gotcha
 
@@ -94,6 +115,9 @@ widget, so that is the cheapest way to arrive at settled values. It clears the s
 those frames, because conky repaints the whole window each tick and without clearing 14 frames of
 glow pile up and the render comes out far brighter than the real thing.
 
+Conky-Mirage has its own harness, `Conky-Mirage/mirage_preview.lua`, which works differently
+(overrides instead of a script copy, a synchronous helper, a still mode); see its section below.
+
 A GUI cannot be screenshotted on the Wayland session either, but unlike conky it can be pointed at
 a virtual X server that *can* be captured — `Xvfb :99 -screen 0 1400x1000x24`, run the program with
 `DISPLAY=:99`, then `ffmpeg -f x11grab -draw_mouse 0`. Without `-draw_mouse 0` the pointer is baked
@@ -125,7 +149,7 @@ from Lua directly (dates, calendar arithmetic) belongs in Lua rather than an `${
 
 ### Conky config syntax
 
-All six configs use the 1.10+ Lua-table syntax (`conky.config = { ... }; conky.text = [[ ]]`).
+All seven configs use the 1.10+ Lua-table syntax (`conky.config = { ... }; conky.text = [[ ]]`).
 Conky-Calendar-Extra was converted from the pre-1.10 `key value` / `TEXT` format; older copies of
 that file found elsewhere will still be in the old format, and while conky can auto-convert them at
 startup, that rescue path depends on the optional `old configuration syntax` build feature and emits
@@ -134,7 +158,9 @@ a syntax-error warning every launch. Convert instead, with `convert.lua` from co
 Settings get retired regularly, and transparency is where it bites: `own_window_transparent` is
 deprecated and `own_window_argb_visual` has been removed outright ("ARGB is now always enabled when
 available"). Both are gone from this repo — transparency is now `own_window_colour = '#00000000'`
-alone.
+alone. Conky 1.25 then renamed that to `own_window_color` and warns about the old spelling on every
+launch; `start_conky_mirage` asks `conky --version` at load time (`conky_version` is *not* defined
+while a config is evaluated) and sets whichever the binary wants, including the pre-1.24 pair.
 
 Verify config changes by actually running conky for ~12s and reading the log, not by a headless
 check. `DISPLAY= conky -c <file>` only exercises the settings parsed before X initialises; the
@@ -427,6 +453,263 @@ When the window cannot hold the result everything is scaled down by one shared f
 clipped, and `warn_once` logs the window size to set. Verify layout changes by rendering rather than
 by eye: `cairo_image_surface_create` + `cairo_surface_write_to_png` from `/usr/lib64/conky/libcairo.so`
 draws the widget headlessly, with a stub `conky_surface()` returning the image surface.
+
+### Conky-Mirage: Lua paints, Python does everything slow
+
+`mirage.lua` is the draw hook and never blocks. `mirage.py` is a one-shot the Lua starts detached
+(`os.execute(cmd .. " &")`) every `HELPER_EVERY` (10s); it takes an `flock` on the cache's `lock`
+so a slow network cannot let runs pile up. It writes into `~/.cache/conky-mirage/`: `theme.lua`
+and `weather.lua` (Lua table literals, loaded with `loadfile(path, "t", {})` so a bad file can only
+fail to load), per-tile `glass_N.png` and `shadow.png`, `under.png` (the raw wallpaper behind the
+window, used only by previews), and `serial`, which it bumps when anything changed. The Lua reads
+`serial` once a second and reloads only when it moved. A run with nothing to do costs ~20ms of
+CPU; `urllib`/`ssl` are imported lazily because importing them cost more than the rest of the run.
+
+The `require`/`conky_window_surface` block and `wall_clock` in `mirage.lua` are copied verbatim
+from `lua_orrery.lua`; a fix to either belongs in both. Its sensor code is its own (one CPU
+package temperature, not per-core), so the hwmon note above does not extend to it.
+
+**Every setting lives in mirage.lua's USER CONFIGURATION** and reaches the helper as command-line
+arguments (`helper_command`). Do not give `mirage.py` a config of its own. The tile rectangles are
+passed too, so Python renders glass for exactly the layout Lua computed.
+
+- **The helper finds the window by title** (`xwininfo -name conky-mirage`): `own_window_title` in
+  `start_conky_mirage` and `TITLE` in `mirage.lua` must match. It asks X rather than computing
+  from `alignment`/`gap_x` because the real window lands a pixel or two off what was requested
+  (measured: 403×302 at 122,76 for a 400×300 request at 123,77), and glass cut from the wrong
+  pixels shows. `output_backend = 'x11'` is required for the same reason.
+- **A wallpaper change is caught by a probe, not the 10s run.** `watch_wallpaper` asks the
+  desktop for its wallpaper every `PROBE_EVERY` (1.5s) -- `gdbus` on Plasma, `gsettings` on the
+  GNOME family, `xfconf-query` on Xfce -- detached, writing to `wallpaper.probe` via a rename,
+  read back on the next round. When the answer changes it calls `run_helper(now, true)`.
+  Measured live on Plasma: re-rendered glass 2.2-2.5s after `setWallpaper`. Setters with
+  nothing to ask (feh, swww, ...) and an explicit `wallpaper` path rely on the 10s run, whose
+  signature includes the image's mtime.
+- **Which wallpaper.** KDE first asks Plasma over D-Bus (`org.kde.PlasmaShell.wallpaper <screen>`,
+  via `gdbus`): Plasma writes `plasma-org.kde.plasma.desktop-appletsrc` some time after a change,
+  the D-Bus answer is live. The appletsrc parse is the fallback. A wallpaper package directory is
+  resolved the way plasma-workspace's `findPreferredImageInPackage` does, `images_dark` when the
+  colour scheme is dark. GNOME/Cinnamon/MATE (gsettings), Xfce (xfconf), feh, nitrogen, swaybg,
+  swww, hyprpaper and pywal follow. A slideshow records no current image, so it falls back to
+  tinted panes rather than show the wrong picture.
+- **The theme signature includes `mirage.py`'s own mtime**, so editing the helper re-renders the
+  glass on the next run; `VERSION` only needs bumping for changes that do not touch the file.
+- **Glass is darkened by multiplying, not by mixing towards a tint.** Mixing towards grey flattened
+  Saturn's golds and pinks to mud; multiplying keeps hue and saturation. Each tile is solved for
+  7:1 (6:1 on light glass) against its 94th-percentile pixel, not the mean, then pulled 35% towards
+  the darkest tile so neighbouring panes read as one material.
+- **The palette is in OKLab.** Accents are scored on chroma over area. The temperature ramp runs
+  from the wallpaper's coolest hue to its warmest *by way of the accent*, at least 170° wide (an
+  80° ramp made 8° and 18° look the same), with stops spread so 5–25°C covers most of it. Stops
+  are in Celsius; the Lua converts imperial readings before looking them up.
+
+Drawing:
+
+- **Tiles have a `static` part and a `live` part.** Static is drawn into a per-tile surface keyed
+  by its `key()`; shadow, glass and every static layer are then flattened into one `base` surface,
+  rebuilt only when some key changes (every frame during the intro and a palette crossfade, else
+  about once a minute). Compositing ~20 window-sized layers per frame was most of the X server's
+  cost. Measured at 10fps: conky ~0.9% of a core, Xwayland ~2.2% above its baseline.
+- **Live drawing is clipped to its tile before any `cairo_push_group`.** A group takes the size of
+  the current clip; unclipped, the icon's cloud cut-out allocated a window-sized pixmap per frame.
+- **Gauge arcs use a linear gradient, not a mesh/conic one.** XRender has linear gradients; a mesh
+  pattern is rasterised by cairo on the client and uploaded every frame for every ring.
+- **The toy font API has no glyph fallback.** Noto Sans has no arrows, so ↑/↓ are drawn as
+  chevrons and the location pin is a path. Check any new glyph with
+  `fc-list ':charset=XXXX' family` first.
+- **`string.format("%d", x)` errors in Lua 5.4 when x is a non-integral float**, which an idle
+  network rate is: `human_rate` crashed the whole draw hook on a quiet connection until it
+  floored. Floor before `%d`.
+- **Open-Meteo is fetched with `timeformat=unixtime`**, so `daily[i].t` is the absolute instant of
+  local midnight. Seconds since midnight is `now - t`, *without* `tz_offset`; the offset is only
+  for formatting, as `os.date("!%H:%M", t + tz_offset)`. Adding it moved the sun three hours ahead.
+- Captions are upper-cased by a UTF-8 `upper()` covering Latin-1 and Latin Extended-A, because
+  day names follow the locale and `string.upper` mangles "sâmbătă".
+
+- **`fit()` trims whole UTF-8 characters.** It used to drop bytes, which cut the two-byte "°"
+  in half; cairo answers invalid UTF-8 by putting the context into an error state that silently
+  drops *everything drawn after it* in that tile, so a trimmed "Dew point 6°" took the scale bar
+  under it with it. Any new string surgery has to go by `utf8.offset`.
+- **`disks`** takes mount points or devices; a device is resolved through `readlink -f` and
+  `/proc/mounts` once a minute, because conky's `${fs_*}` only accept a mount point. Each disk
+  is a gauge keyed `disk1`, `disk2`… in `target`/`shown`.
+- **The 7-day forecast is a chart, not bars**: a column per day, a warm line through the highs
+  and a cool line through the lows (`P.sun`, `P.rain`), numbers by their dots, a High/Low key.
+  Bars failed twice with the user. The iOS layout -- low and high in columns at the edges, the
+  day's bar on the week's scale between them, coloured by temperature -- read as a highlight
+  (the warm end's pink) and as wrong (today 8-10° in a week of 8-19° put "now, 10°" near the
+  left of the track, so it read "close to 8°": the eye takes a track to span its own row's
+  numbers). Moving the numbers to the bar ends fixed the meaning and lost all alignment. Don't
+  bring bars back.
+- **Conky reloads its config by itself when the file changes, and comes back with a 1x1
+  window** (conky 1.25 does not apply `minimum_width/height` again; reproduced by editing
+  `start_conky_mirage` under a running copy). Editing that file under a running widget used to
+  break it invisibly, and a second copy started next to the broken one then fought it: both
+  share the cache and the window title, so each helper rendered glass for its own window and
+  the other fell back to tinted panes, flickering every couple of seconds. Two guards:
+  `check_owner` makes the newest copy win (each writes its pid to `owner`; an older copy that
+  sees a live newer one exits), and `restart_fresh` makes a copy whose window is under 40px
+  start itself again with its own `/proc/<pid>/cmdline` and cwd, then exit, at most once in
+  30s. The settings window has one Save, which stops the widget *before* writing and starts it
+  after, so conky never sees its file change underneath it. When testing, give a test copy its
+  own title and `XDG_CACHE_HOME`, or it joins in the fight; and find test copies by
+  `/proc/<pid>/cwd`, since a relative `-c` leaves nothing to tell them apart by.
+  Editing `mirage.lua` is different and safe: conky re-runs the script in the same window,
+  and a running widget picks the change up within a second (seen as the same pid rewriting
+  `owner` at the edit's mtime).
+- **The network graph is ported from the user's conky-dashboard-pixel**
+  (`~/git/kde-plasma-themes/Retrograde/extras/conky-dashboard-pixel/lua/dashboard.lua`:
+  `sample_network`, `record_network`, `section_network`), at the user's request because it
+  carries their bug fixes; keep the two in step. It takes the busiest non-loopback interface
+  rather than the default route (a VPN or no default route left the graph flat), restarts the
+  count when the interface changes (no false burst), measures spans with the monotonic
+  `/proc/uptime` (wall time steps after a suspend), averages each point over its whole second,
+  draws both directions against one linear scale with a 32 KiB/s floor, and writes KiB/MiB to
+  three figures. One deliberate difference: Mirage's "peak" label is the busiest second
+  actually seen; the dashboard prints the scale's floor, so an idle link reads "peak 32 KiB/s".
+- **Hourly marks are placed by measuring their labels**: a three-hour mark is skipped unless
+  its temperature, hour and icon clear the previous mark (or "Now"). The old rule skipped marks
+  within 40 minutes of now, which stopped being enough once "°C" doubled the labels' width.
+- **Temperatures carry their unit** (`show_temperature_unit`). `degrees(v, unit)` takes the
+  forecast's unit unless given one; the machine's sensors are always `"C"`, whatever `units` is.
+
+#### Looks
+
+`style` is one of four looks: `glass` (the helper's frosted PNGs), `solid` (flat panes in a
+deep or pale tone of the wallpaper), `metro` (square, flat tiles in four bold colours with
+everything on them white) and `pixel` (Material You: large corners, tonal containers, round
+regular-weight numerals via `DISPLAY_FONT`). The helper's palette carries every look's
+colours (`solid`, `metro1`-`4`, `px_*`), all derived from the wallpaper and blended through
+a wallpaper change like the rest. `BASE` is the theme palette; `P` is what drawing reads, and
+in the looks other than glass `palette_for(tile.name)` swaps it per tile -- a tile's `tint` is
+its background, which is also what the cut-out effects (the wind hub, the dots' rings, the
+today circle's numeral) are drawn in, so they stay right on any background. `METRO_TILE` and
+`PIXEL_TILE` assign the colours by tile name so neighbours differ. Only glass and solid have a
+shadow; Metro and Pixel are flat. `transparency` (0-0.9) scales every background's alpha and
+the shadow's, never the content's. Corners and spacing stay user settings; the settings
+window's look picker sets each look's designed values (`STYLE_FIT`) when chosen. Metro's
+colours sit at OKLab L 0.45-0.52 so white text holds about 5.5:1; Pixel's tertiary container
+takes the wallpaper's second accent, since a fixed hue rotation landed on olive for a warm one.
+
+**`mirage.lua` is close to Lua's limit of 200 locals in one chunk** ("too many local
+variables"). Self-contained sections are wrapped in `do ... end` with only the functions the
+rest of the file calls declared outside (`palette_for`, `moon_phase`, `sample_network`,
+`check_owner`/`restart_fresh`, `watch_wallpaper`). Add new helpers the same way rather than
+as more top-level locals.
+
+Small decisions the user made: the 7-day rain chance is shown for every day (a gap for a dry
+day read as missing data; below 20% it is fainter), the 24-hour chart has no highlighted
+"now" dot (the "Now" label is enough) and no night shading (a darker band from sunset to
+sunrise, which the user read as rain and disliked), and the wind hub is 19 units across so the
+unit clears its edge.
+
+#### Wallpapers
+
+`Conky-Mirage/wallpapers/make_wallpapers.py` (numpy + Pillow) draws twelve wallpapers, three
+made for each look, as KDE packages in `wallpapers/<look>/Mirage<Look><Name>/` at 3440x1440
+and 3840x2160; `--size` adds another size to each package. `wallpapers/preview.jpg` is all
+twelve with the widget on them. They were picked by rendering every wallpaper in every look,
+and the look a wallpaper suits follows from how that look takes its colours:
+
+- Glass wants soft light behind the widget for the frosting to show (Afterglow, Silk,
+  Orbit). Solid wants calm, flat scenery (Horizon, Dunes, Pines).
+- Metro builds its tiles from the two main hues and those turned by 40 degrees, at OKLab L
+  about 0.5, where orange and yellow come out olive and brown (Dunes, Canopée). Its three
+  are magenta, violet, blue and teal (Shards, Stripes, Mosaic).
+- Pixel's containers are dark or pale tones of the same two hues, so it wants gentle
+  colours that are not orange (Bloom, light; Pebbles and Arches, dark).
+
+Layout is in units of the screen's height and placed by the width's share where the shape
+has to keep its place (the Stripes' angle, the Arches' spacing), or 16:9 versions crowd
+into the widget's corner. Shapes are signed distances painted over their own box; colours
+mix in OKLab, light adds in linear RGB, and grain plus dither keep gradients from banding.
+Two traps: a layer's soft shadow must be masked to the ground already drawn or it smudges
+the sky (Dunes), and a glow blurred on an 8-bit copy shows steps (Silk blurs in floating
+point).
+
+#### Sizes
+
+Every size is a setting: `text_size`, `clock_size`, `temperature_size`, `caption_size`,
+`widget_width`, `tile_gap`, `tile_padding`, `corner_radius`. Three rules make them safe:
+
+- **`text_size` zooms each tile's contents and grows the rows to match**, rather than scaling
+  fonts inside a fixed layout. A tile is drawn at `cs = s * text_size` in content units
+  `cw × ch` (its pixel size over `cs`), and the row heights in `ROWS` are multiplied by
+  `text_size`; widths are not, so a narrower content width is the only way text can run out,
+  and that is handled where it can happen (`fit`, `fitted_size`, captions shrinking to `room`).
+  Every tile is written against those content units, so no position in a tile needs to know
+  the text size.
+- **The big numerals hang from a fixed top** (cap height ≈ 0.72 of the size) and push what is
+  under them down; row 1 grows by the larger of the two growths (`hero_growth`), and a numeral
+  too wide for its tile shrinks rather than overflowing.
+- **The window size follows from the sizes**, and conky's window comes from the config, which
+  cannot run the layout. `mirage_natural_size()` (a global) gives the size at scale 1;
+  `start_conky_mirage` holds it as `base_width, base_height`; `mirage_settings.py` writes it on
+  Save; and `check_window` logs once, with the numbers to use, when the window's shape and
+  the layout's disagree. The widget still draws in a mismatched window, scaled down to fit.
+
+#### The preview harness and the settings editor
+
+`mirage_preview.lua` loads `mirage.lua` with any `setting=value` overrides substituted into its
+source. `mirage_cache_dir`, `mirage_preview_sync` and `mirage_preview_still` must be set
+*before* that load, since the script reads them at load time — set after, a preview writes into
+the running widget's own cache. It sizes the window from `mirage_natural_size()`, places it as
+conky would (alignment and margins inside `_NET_WORKAREA`; middle alignments subtract the gap),
+runs the helper synchronously into `MIRAGE_PREVIEW_CACHE` with the position passed as `--at`,
+and composites over `under.png`. Its last line, `size WxH at X,Y scale S natural WxH`, is what
+the editor parses. `MIRAGE_PREVIEW_STILL=1` skips the intro, the palette fade and gauge easing,
+and draws two frames a second apart (CPU needs two samples) — about half a second a render.
+`MIRAGE_PREVIEW_SIZE_ONLY=1` prints the natural size and exits, in ~10ms, for Save.
+`mirage_preview_refresh` makes the next frame run the helper; the demo video was made by
+switching `wallpaper` and setting it.
+
+The demo video shows each look on its three wallpapers. A look is read once at load, so it
+is four runs of the script (one per look) on one shared fake timeline, and the whole scene
+dissolves over 22 frames where the look changes. For the runs to agree there, every run
+starts at frame 0 and renders silently up to its first written frame; CPU, memory, network,
+temperatures and GPU are closed-form functions of the fake uptime (the real ones differ run
+to run); `os.date` is faked as well as `os.time`, because the static layers' keys ask
+`os.date("%H%M")` with no time and so read the real clock (it put 17:42 before 17:41); and
+`tile_gap` is 14 in every look so the tiles line up through a dissolve. The runs write the
+widget alone and Python composites each frame onto the whole wallpaper: the mp4/webm are the
+desktop at 1920 wide (the wallpapers' art is mostly away from the widget), the gif is the
+widget's own rectangle, and `conky-mirage-close-up.mp4` is the widget with a 36px margin of
+wallpaper at full size (888x996). Stills for posting live in `Conky-Mirage/previews/` (the
+looks and all twelve wallpapers on the desktop, in several widths; `close-ups/` crops to the
+widget). The user wants such files in the repo, not in ~/Pictures. Each wallpaper is held 105 frames, because the widget takes about
+2.6s to finish recolouring after a change (half a second to notice, a poll, the 1.6s fade);
+at 88 it never settled. `av1_vaapi` ignores `-qp`: use `-rc_mode CQP -global_quality 90`.
+
+`mirage_settings.py` follows the orrery editor's conventions (canvas-drawn controls, candidate
+settings never written until Save, unchanged values left byte-identical, `.bak` copies,
+`/proc/*/cmdline` to find and restart only Mirage's conky) with two differences. Renders run on
+**one** long-lived worker thread that always takes the newest request, not a thread per
+render: two renders at once would race for the helper's `flock`, and the loser would draw with
+glass rendered for the previous layout. And the candidate settings go to the harness as
+overrides, not as a rewritten copy of the script. A rewritten number keeps the comment after it
+in its column.
+
+The window is **resizable and maximisable**, never smaller than it opens (`minsize` of its
+requested size), and the preview panel grows with it. The worker thread only renders, to a file
+per render (`frame-<seq>.png`, older ones deleted); the editor scales "Whole widget" and "On
+your screen" to the panel's current size itself, from the newest render and the full-size
+desktop the worker made once (`Renderer.screen`), so a resize, debounced 120ms, never
+re-renders. "Whole widget" never scales up past 100%.
+
+The **Look** section picks `style` (a string, matched by `STYLE_RE` and written in place
+like the numbers) and `transparency`. **Reload** drops the editor's copy of the desktop and its
+scaled views and renders again, so a wallpaper changed while the window is open shows up; the
+preview's helper re-renders its glass by itself, since its signature includes the wallpaper.
+
+What a control does is shown in a **tooltip** (`Tooltip`), never in the status line: the status
+line used to wrap onto two lines for a long hint and the whole window jumped. The status label
+is a fixed width and never wraps. The margin sliders are named for where the widget is ("From
+the right", "Move up" for a middle alignment, where conky's gap moves it up). The window icon
+is drawn by `make_icon` with Pillow at start-up and set with `iconphoto`; `xprop`'s default
+output shows `_NET_WM_ICON` as empty even when it is set, so check it with
+`-f _NET_WM_ICON 32c ' = $0 x $1'`. Under Xvfb the editor sizes "auto" to the virtual screen; drive it with a script
+that imports it, points `SCRIPT`/`CONFIG` at copies and stubs `mirage_pids`, as there is no
+xdotool here.
 
 ### Cairo operators carry meaning
 
