@@ -2054,9 +2054,25 @@ TILES.system = {
       local value = shown[g[2]] or 0
       local hot = clamp((value - 75) / 25, 0, 1)
       ring_arc(cr, cx, cy, r, RING_WIDTH, value / 100, P.accent, mixc(P.accent2, P.bad, hot))
-      face(cr, font_regular, 13)
+      -- The number and a smaller % sign, centred together inside the ring;
+      -- "100%" shrinks rather than touching a small ring.
+      local number, size = tostring(round(value)), 13
+      face(cr, font_regular, 8.5)
+      local sign = advance(cr, "%") + 1
+      face(cr, font_regular, size)
+      local nw = advance(cr, number)
+      local room = 2 * r - RING_WIDTH - 6
+      if nw + sign > room then
+        size = size * (room - sign) / nw
+        face(cr, font_regular, size)
+        nw = advance(cr, number)
+      end
+      local x = cx - (nw + sign) / 2
       ink(cr, STRONG)
-      text(cr, tostring(round(value)), cx, cy + 4.5, 0.5)
+      text(cr, number, x, cy + 4.5)
+      face(cr, font_regular, 8.5)
+      ink(cr, MUTED)
+      text(cr, "%", x + nw + 1, cy + 4.5)
       if g[3] then
         face(cr, font_regular, 10)
         ink(cr, FAINT)
