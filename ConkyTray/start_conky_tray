@@ -1,0 +1,73 @@
+--[[
+  ConkyTray: the panel's window. The panel itself is drawn by tray.lua.
+
+  Start it with:  conky -c /path/to/ConkyTray/start_conky_tray
+]]
+
+-- How tall the panel is, in your screen's units: the bar is four fifths of
+-- it, with a little room above and below.
+local height = 56
+
+---------------------------------------------------------------------------
+
+local function command(text)
+    local pipe = io.popen(text .. " 2>/dev/null")
+    if not pipe then return "" end
+    local out = pipe:read("a") or ""
+    pipe:close()
+    return out
+end
+
+local here = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$") or "."
+
+-- As wide as the screen. Wayland places windows in units of the screen's
+-- pixels over its scale, so the helper works that out.
+local width = tonumber(command("python3 '" .. here .. "/tray.py' screen"):match("%d+")) or 1920
+
+local major, minor = command("conky --version"):match("conky (%d+)%.(%d+)")
+local version = (tonumber(major) or 1) * 100 + (tonumber(minor) or 25)
+
+conky.config = {
+    -- Wayland, where a panel can keep windows from covering it (the layer
+    -- shell's exclusive zone). Through XWayland, KWin ignores the request.
+    output_backend = 'wayland',
+
+    update_interval = 0.1,
+    double_buffer = true,
+    no_buffers = true,
+    override_utf8_locale = true,
+    text_buffer_size = 256,
+
+    own_window = true,
+    own_window_title = 'conky-tray',
+    own_window_type = 'panel',
+
+    border_width = 0,
+    border_inner_margin = 0,
+    border_outer_margin = 0,
+
+    minimum_width = width,
+    maximum_width = width,
+    minimum_height = height,
+
+    alignment = 'bottom_left',
+    gap_x = 0,
+    gap_y = 0,
+
+    draw_shades = false,
+    draw_outline = false,
+    draw_borders = false,
+    draw_graph_borders = false,
+
+    lua_load = 'tray.lua',
+    lua_draw_hook_pre = 'tray',
+    lua_mouse_hook = 'tray_mouse',
+}
+
+if version >= 125 then
+    conky.config.own_window_color = '#00000000'
+else
+    conky.config.own_window_colour = '#00000000'
+end
+
+conky.text = [[]]

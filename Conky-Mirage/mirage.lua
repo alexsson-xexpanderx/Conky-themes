@@ -2806,7 +2806,7 @@ do
   function fn.readings()
     local machine = {{"CPU", shown.cpu, "%"}, {"MEM", shown.mem, "%"}}
     if hw and (hw.gpu_busy or hw.nvidia) then machine[#machine + 1] = {"GPU", shown.gpu, "%"} end
-    if info.cpu_temp then machine[#machine + 1] = {"TEMP", info.cpu_temp, "°C"} end
+    if info.cpu_temp then machine[#machine + 1] = {"CPU TEMP", info.cpu_temp, "°C"} end
     local storage = {}
     for i, disk in ipairs(info.disks) do storage[#storage + 1] = {disk.label, shown["disk" .. i] or 0, "%"} end
     if hw and hw.battery then storage[#storage + 1] = {"BAT", shown.bat, "%"} end

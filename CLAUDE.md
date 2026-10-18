@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A collection of five independent Conky desktop-widget themes. There is no build system, package
+A collection of six independent Conky desktop-widget themes. There is no build system, package
 manager, test suite, or linter — each theme is a Conky config plus a Lua script that draws with
 cairo, installed by copying files into `~/.conky/`.
 
@@ -20,6 +20,10 @@ cairo, installed by copying files into `~/.conky/`.
   wallpaper, renders the glass and fetches Open-Meteo weather (no API key). Runs in place, like
   the orrery, and like it has a tkinter editor with a live preview (`mirage_settings.py`, for
   sizes and placement). `wallpapers/` holds twelve wallpapers drawn for its four looks.
+- `ConkyTray/` — a panel replacing Plasma's bottom panel (launcher button, pinned and open apps,
+  tray icons, volume, network, battery, clock) in Mirage's four looks. Lua paints; a long-running
+  Python helper (`tray.py`) talks to KWin, the tray protocol and Mirage's helper. Runs in place.
+  Not "independent" in one respect: its looks come from `../Conky-Mirage/mirage.py`.
 
 The top-level `README.md` also advertises two themes that live in *other* repositories
 (`conky-drawer-interactive`, `conky-pywal`) — they are not in this tree.
@@ -778,6 +782,98 @@ output shows `_NET_WM_ICON` as empty even when it is set, so check it with
 `-f _NET_WM_ICON 32c ' = $0 x $1'`. Under Xvfb the editor sizes "auto" to the virtual screen; drive it with a script
 that imports it, points `SCRIPT`/`CONFIG` at copies and stubs `mirage_pids`, as there is no
 xdotool here.
+
+### ConkyTray: a panel on conky's Wayland output
+
+`ConkyTray/` is a panel at the bottom edge: `start_conky_tray` (the window), `tray.lua` (draws,
+takes the mouse), `tray.py` (a long-running helper), `tray_kwin.js` (a KWin script the helper
+loads), `tray_menu.py` (popup menus), `tray_preview.lua` (renders the panel to a PNG) and
+`tray_settings.py` (the settings window). It was
+built in one go at the user's request ("build something first that works, then we go from
+there"); expect it to change.
+
+- **It has to be conky's Wayland output, not XWayland.** Measured: with `output_backend = 'x11'`
+  and `own_window_type = 'panel'` conky sets `_NET_WM_STRUT_PARTIAL` correctly and KWin ignores
+  it (`_NET_WORKAREA` unchanged), so maximised windows cover the panel. With
+  `output_backend = 'wayland'` the same config becomes a layer-shell surface with an exclusive
+  zone and the work area shrinks. With Plasma's panel still at the bottom, the two zones stack
+  and ConkyTray sits just above it (measured at y 1312 of 1440).
+- **Two sizes.** On Wayland `conky_window.width/height` are logical (2991x56 on 3440 wide at
+  scale 1.15) while `conky_surface()` is an image surface of real pixels (3440x65) carrying a
+  device scale. `tray.lua` undoes the scale (`cairo_scale(1/ds)`) and lays out in real pixels so
+  icons land 1:1. Mouse event coordinates are logical; multiply by `ds`. The window is as wide as
+  the screen in logical units, which the config gets from `tray.py screen` (`kscreen-doctor -j`).
+- **The window list** comes from `tray_kwin.js`, which KWin runs: it calls
+  `org.conkytray /Tray Windows(json)` on window add/remove/activate and caption, minimise and
+  attention changes, with the windows (`normalWindow && !skipTaskbar`) and the geometry of every
+  window whose class starts with "conky". The helper picks its own panel by conky's pid (Lua reads
+  it from `/proc/self/stat` and writes it to `layout`): a Wayland client cannot learn its own
+  position, and the glass needs it. KWin scripts cannot be called from outside, so each action
+  (activate, minimise, close) is a one-off script loaded, run and unloaded. Two traps:
+  `org.kde.kwin.Scripting.loadScript` is overloaded, so dbus-python needs `signature="ss"`, and the
+  loaded script's object is `/Scripting/Script<id>`.
+- **Matching windows to apps.** A window gives `desktopFileName`, `resourceClass` and
+  `resourceName`; .desktop files give their id, `StartupWMClass` and `Exec`. All candidates are
+  collected and a pinned app wins, then one without `NoDisplay`. Found on this machine: Zen's
+  window says "zen", its launcher is `zen-browser.desktop` with no `StartupWMClass`, and a hidden
+  `userapp-Zen-*.desktop` (KDE's file for a custom command, `Exec=/opt/zen-browser/zen`) matched by
+  exec name first, so the open Zen showed beside the pinned one. Hence also the rule that a pinned
+  app named for the class plus a dash ("zen" -> "zen-browser") is taken.
+- **The tray** is the StatusNotifierItem host protocol. The watcher lives in `kded6`, not
+  plasmashell, so it survives removing Plasma's panel; `xembedsniproxy` turns old XEmbed icons into
+  items. Passive items are hidden, as Plasma hides them. Plasma's own tray entries (volume,
+  network, Bluetooth, clipboard, notifications) are plasmoids, not items, and vanish with the
+  panel: volume (`pactl subscribe` + `wpctl`), network (`nmcli monitor`) and battery (`/sys`) are
+  drawn by ConkyTray itself; the rest is not done yet.
+- **Menus** are `tray_menu.py`, a GTK 3 layer-shell surface per menu, because a Wayland popup must
+  belong to a surface of the same client and the panel's is conky's. KWin gives an on-demand
+  layer surface the keyboard when it maps (tested), so focus-out means a click elsewhere and
+  closes it. Tray menus are read from the app's `com.canonical.dbusmenu` and the click is sent
+  back as `Event(id, "clicked", ...)`. Pin `Gdk` 3.0 before importing, or PyGObject loads Gdk 4
+  and Gtk 3 then refuses to import.
+- **Icons** are looked up in the user's theme (`kdeglobals` `[Icons] Theme`, here Tela, then its
+  `Inherits`, hicolor, pixmaps), rendered to PNGs of the exact pixel size with `rsvg-convert`
+  into `~/.cache/conky-tray/icons/`. KDE symbolic SVGs use `.ColorScheme-Text { color: ... }`
+  stylesheets; the helper rewrites that colour to the panel's ink, as Plasma does, and tints
+  GNOME `-symbolic` PNGs.
+- **The look** is Mirage's: `style = "mirage"` makes the helper read `style`, `corner_radius`,
+  `blur_radius` and `glass_tint` out of `../Conky-Mirage/mirage.lua` when its mtime changes, and
+  the palette and glass come from running `mirage.py theme --at <panel> --window WxH --tiles
+  <panes>` into `~/.cache/conky-tray/theme/`. Glass and solid are one pane end to end; Metro and
+  Pixel are four blocks (launcher, apps, tray, clock) in the order Mirage colours its boxes
+  (Metro 1-4; Pixel primary, surface, secondary, tertiary), as the folded strip does.
+- **Files between them** (in `~/.cache/conky-tray`): Lua writes `layout` (key=value: pid, size,
+  ds, panes, icon sizes and colours, menu colours) and appends tab-separated lines to `commands`;
+  the helper polls `commands` every 40ms, writes `state.lua` and bumps `serial`. Lua starts the
+  helper when `daemon.pid` is not a live `tray.py`; the helper exits 15s after the pid in `layout`
+  has gone, and one holding the bus name `org.conkytray` makes a second exit at once.
+- **The settings window** (`tray_settings.py`) imports Conky-Mirage's controls (`Button`,
+  `Slider`, `Segmented`, `Switch`, `Tooltip`, `make_icon` and the colours) from
+  `../Conky-Mirage/mirage_settings.py`, which has no side effects on import, so the two windows
+  match. It edits the quoted settings in `tray.lua` (keeping the comment after each in its
+  column) and `local height` in `start_conky_tray`. Saving `tray.lua` alone needs no restart:
+  conky's Wayland output reloads a changed Lua script in place too (seen live: the edited
+  script's mouse log appeared without a restart). A new height is a new window, so then the
+  panel is stopped before writing and started after, as Mirage's Save does. The preview runs
+  `tray_preview.lua` with the settings as overrides and shows the panel's two ends stacked at
+  real size (its middle is empty). The overrides go through `gsub`, whose replacement string
+  treats `%` as special: a date format like `%a %d %b` has to be escaped to `%%`.
+- **Starting apps.** `kstart --application` takes the desktop file's name *without* ".desktop"
+  (`org.kde.dolphin`). Given `org.kde.dolphin.desktop` it prints "No such service" and then hangs
+  instead of exiting, so the first version started nothing and left a stuck kstart per click (the
+  user found pinned apps that were not open did nothing). The helper now passes the bare name,
+  falls back to `gtk-launch` and `kioclient exec` on an error exit, and kills a kstart still
+  running after 8s. Launched apps get no pipes from the helper, which they would inherit.
+- **Its environment is the apps'.** Whatever started conky passes its environment to the helper
+  and on to every app the panel opens. Started from an agent's shell, that included the agent's
+  own variables; when restarting the panel from such a shell, take the environment from
+  `/proc/<plasmashell pid>/environ`, which is the desktop session's. The working folder is
+  passed on too: conky runs in the ConkyTray folder and a terminal opened from the panel
+  started there, so the helper `chdir`s to the home folder first.
+- **Testing.** A test panel on the real display reserves real space, so keep such runs short.
+  `tray_preview.lua` renders from a cache's `state.lua` with the same device-scaled surface conky
+  gives; it never writes `layout`, which would point the running helper at the preview's pid.
+  The first mouse events (not moves) go to `~/.cache/conky-tray/mouse.log`.
 
 ### Cairo operators carry meaning
 
