@@ -296,9 +296,9 @@ class Renderer(threading.Thread):
         self.request = None
         self.screen = None             # the wallpaper as the desktop shows it, made once
 
-    def submit(self, seq, values):
+    def submit(self, seq, values, folded=False):
         with self.cond:
-            self.request = (seq, dict(values))
+            self.request = (seq, dict(values), folded)
             self.cond.notify()
 
     def run(self):
@@ -306,10 +306,10 @@ class Renderer(threading.Thread):
             with self.cond:
                 while self.request is None:
                     self.cond.wait()
-                seq, values = self.request
+                seq, values, folded = self.request
                 self.request = None
             try:
-                self.results.put((seq, self.render(seq, values), None))
+                self.results.put((seq, self.render(seq, values, folded), None))
             except Exception as problem:                  # shown in the preview
                 self.results.put((seq, None, str(problem)))
 
@@ -327,13 +327,14 @@ class Renderer(threading.Thread):
             else:
                 self.screen = Image.new("RGB", (w, h), (20, 24, 32))
 
-    def render(self, seq, values):
+    def render(self, seq, values, folded=False):
         from PIL import Image
         self.ensure_screen(Image)
         # A file per render: the editor scales the views from the newest one
         # whenever the window changes size, after this thread has moved on.
         out = os.path.join(self.workdir, "frame-%d.png" % seq)
-        env = dict(os.environ, MIRAGE_PREVIEW_STILL="1", MIRAGE_PREVIEW_CACHE=PREVIEW_CACHE)
+        env = dict(os.environ, MIRAGE_PREVIEW_STILL="1", MIRAGE_PREVIEW_CACHE=PREVIEW_CACHE,
+                   MIRAGE_PREVIEW_COMPACT="1" if folded else "0")
         done = subprocess.run(["lua", RENDERER, out, where(values), scale_arg(values)] + overrides(values),
                               capture_output=True, text=True, timeout=90, env=env, cwd=HERE)
         m = SIZE_LINE.search(done.stdout)
@@ -778,6 +779,7 @@ class Editor(tk.Tk):
         self.seq = 0
         self.pending = None
         self.view = "fit"
+        self.folded = False            # preview the widget folded into its strip
         self.shown = None              # the last render's info
         self.image = None
         # The preview panel's size, which follows the window. The views are
@@ -909,11 +911,19 @@ class Editor(tk.Tk):
                              note=lambda x, k=key: self.margin_note(k))
 
         # ---- preview
-        self.views = Segmented(right, [("Whole widget", "fit"), ("Real size", "actual"),
-                                       ("On your screen", "desktop")], self.view, self.set_view,
-                               width=PREVIEW_W + 2)
-        self.views.grid(row=0, column=0, sticky="ew", pady=(2, 10))
+        top = tk.Frame(right, bg=BG)
+        top.grid(row=0, column=0, sticky="ew", pady=(2, 10))
+        top.columnconfigure(0, weight=1)
+        self.views = Segmented(top, [("Whole widget", "fit"), ("Real size", "actual"),
+                                     ("On your screen", "desktop")], self.view, self.set_view,
+                               width=PREVIEW_W - 168)
+        self.views.grid(row=0, column=0, sticky="ew")
         Tooltip(self.views, lambda x: VIEW_NOTES[self.views._index_at(x)])
+        self.fold_picker = Segmented(top, [("Open", False), ("Folded", True)], self.folded,
+                                     self.set_folded, width=160)
+        self.fold_picker.grid(row=0, column=1, sticky="e", padx=(10, 0))
+        Tooltip(self.fold_picker, "See the widget open, or folded into a narrow strip at the "
+                                  "edge of the screen. The arrows in its top corner fold it.")
         frame = tk.Frame(right, bg=SURFACE, highlightthickness=1, highlightbackground=BORDER)
         frame.grid(row=1, column=0, sticky="nsew")
         self.canvas = tk.Canvas(frame, width=PREVIEW_W, height=PREVIEW_H, bg=SUNKEN,
@@ -1041,6 +1051,10 @@ class Editor(tk.Tk):
         self.view = value
         self._show()
 
+    def set_folded(self, value):
+        self.folded = value
+        self.request_render()
+
     def changed(self):
         self.status.configure(text="")
         self.refresh()
@@ -1067,7 +1081,7 @@ class Editor(tk.Tk):
         self.pending = None
         self.seq += 1
         self.busy.configure(text="Updating the preview…")
-        self.renderer.submit(self.seq, self.values)
+        self.renderer.submit(self.seq, self.values, self.folded)
 
     def _drain(self):
         newest = None

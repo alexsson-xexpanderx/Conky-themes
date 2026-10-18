@@ -20,6 +20,7 @@
   frames a second apart instead of fifteen, which is what mirage_settings.py
   wants: a settled frame, quickly. MIRAGE_PREVIEW_SIZE_ONLY=1 draws nothing
   and prints only "natural WxH", the size these settings make at scale 1.
+  MIRAGE_PREVIEW_COMPACT=1 draws the widget folded into its strip.
 
   The widget cannot be screenshotted on a Wayland session -- a compositor will
   not let an X11 client grab the screen -- so this gives the script the
@@ -127,6 +128,10 @@ end
 mirage_cache_dir = (os.getenv("MIRAGE_PREVIEW_CACHE") or "/tmp/conky-mirage-preview")
 mirage_preview_sync = true
 mirage_preview_still = os.getenv("MIRAGE_PREVIEW_STILL") == "1" or nil
+-- MIRAGE_PREVIEW_COMPACT=1 draws the widget folded into its strip, on the
+-- side of the screen it is placed on.
+mirage_preview_compact = os.getenv("MIRAGE_PREVIEW_COMPACT") == "1" or nil
+mirage_preview_position = (arg[2] or ""):match("^(%a[%a_]*)") or config.position
 
 local path = HERE .. "/mirage.lua"
 local file = assert(real_open(path, "r"))

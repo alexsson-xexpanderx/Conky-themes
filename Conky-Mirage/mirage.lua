@@ -241,11 +241,14 @@ do
   -- neighbours differ; Pixel gives each box a tonal role, the way Android's
   -- Material You colours its widgets.
   local METRO_TILE = {clock = 1, now = 2, hourly = 3, week = 4, wind = 3, humidity = 2,
-                      uv = 1, air = 4, sky = 2, system = 1}
+                      uv = 1, air = 4, sky = 2, system = 1,
+                      strip_time = 1, strip_weather = 2, strip_machine = 3, strip_storage = 4}
   local PIXEL_TILE = {clock = "px_primary_c", now = "px_tertiary_c", hourly = "px_surface",
                       week = "px_surface", wind = "px_secondary_c", humidity = "px_secondary_c",
                       uv = "px_secondary_c", air = "px_secondary_c", sky = "px_tertiary_c",
-                      system = "px_surface"}
+                      system = "px_surface",
+                      strip_time = "px_primary_c", strip_weather = "px_tertiary_c",
+                      strip_machine = "px_secondary_c", strip_storage = "px_surface"}
   local WHITE = {1, 1, 1}
   -- On Metro's coloured tiles everything is white, temperatures included.
   local METRO_TEMPERATURE = {{-50, 1, 1, 1}, {60, 1, 1, 1}}
@@ -1123,6 +1126,9 @@ local ROWS = {
 }
 
 local layout = nil
+-- The fold into a strip: add (to a layout), frame (draw) and input (the
+-- parts of the window that take the mouse), defined with the drawing.
+local fold = {}
 
 local function compute_layout(win_w, win_h)
   local rows = {}
@@ -2181,6 +2187,8 @@ local function helper_command()
     "--cache", shell_quote(CACHE), "--title", shell_quote(TITLE),
     "--window", string.format("%dx%d", layout.W, layout.H),
     "--tiles", shell_quote(table.concat(rects, ";")),
+    "--strip", shell_quote(layout.strip and layout.strip.key or ""),
+    "--input", shell_quote(fold.input()),
     "--radius", string.format("%.2f", RADIUS * s), "--scale", string.format("%.4f", s),
     "--wallpaper", shell_quote(wallpaper),
     "--mode", choice(glass_tone, {"auto", "dark", "light"}, "auto"),
@@ -2313,6 +2321,8 @@ local function install_theme(target_surface, now)
       if s then surfaces[string.format("%d,%d,%d,%d", t.x, t.y, t.w, t.h)] = s end
     end
     if new.shadow then new_shadow = upload(target_surface, CACHE .. "/" .. new.shadow) end
+    -- The folded strip's shadow travels with the glass, so it fades with it.
+    if new.strip_shadow then surfaces.strip_shadow = upload(target_surface, CACHE .. "/" .. new.strip_shadow) end
   end
   destroy_all(glass_old)
   if shadow_old then cairo_surface_destroy(shadow_old) end
@@ -2640,6 +2650,400 @@ local function draw_frame(cr, target_surface, now)
   end
 end
 
+---------------- FOLDING INTO A STRIP ----------------
+-- A button in the top corner folds the widget into a slim strip on the
+-- screen-edge side of its window, as tall as the widget: the time, the
+-- weather and the machine. Conky cannot resize its window, so the window
+-- keeps its size and only the button -- or, folded, the strip -- takes the
+-- mouse; the rest stays click-through, as it is when unfolded. Which way it
+-- was left is kept in the cache.
+do
+  local fn = {}                   -- the block's helpers, in a table: mirage.lua is near
+                                  -- Lua's limit of 200 locals, and these would count
+  local STRIP_W = 92              -- the strip's width, in content units
+  local FOLD_TIME = 0.42          -- seconds the fold takes
+  local state_file = CACHE .. "/compact"
+  local compact = false
+  if mirage_preview_compact ~= nil then
+    compact = mirage_preview_compact and true or false
+  elseif not mirage_preview_sync then
+    compact = read_first_line(state_file) == "1"
+  end
+  local amount = compact and 1 or 0   -- how far folded, eased towards compact
+  local input_sent = nil
+
+  -- The side of the screen the widget is anchored to: 1 right, -1 left.
+  -- A preview is told the position it is drawn for.
+  local side = 1
+  do
+    local position = mirage_preview_position
+    if not position then
+      local config = read_all(SCRIPT_DIR .. "/start_conky_mirage") or ""
+      position = config:match("\nlocal position = '([%w_]+)'") or ""
+    end
+    if position:find("left") then side = -1 end
+  end
+
+  function fold.add(l)
+    if #l.tiles == 0 then return end
+    local x0, y0, x1, y1 = math.huge, math.huge, -math.huge, -math.huge
+    for _, t in ipairs(l.tiles) do
+      x0, y0 = min(x0, t.x), min(y0, t.y)
+      x1, y1 = max(x1, t.x + t.w), max(y1, t.y + t.h)
+    end
+    local cs = l.s * TEXT
+    local w = round(STRIP_W * cs)
+    local x = side > 0 and x1 - w or x0
+    local strip = {name = "strip", x = x, y = y0, w = w, h = y1 - y0, s = l.s, cs = cs,
+                   cw = w / cs, ch = (y1 - y0) / cs}
+    strip.key = string.format("%d,%d,%d,%d", x, y0, w, y1 - y0)
+    l.strip = strip
+    -- Folded, the bottom of the strip is the button that opens it again.
+    local bh = round(52 * cs)
+    l.strip_button = {x = x, y = y1 - bh, w = w, h = bh}
+    -- Unfolded, the button sits in the top right corner of the top tile on
+    -- the strip's side, level with the tile's title.
+    local corner = nil
+    for _, t in ipairs(l.tiles) do
+      if t.y == y0 and (not corner or t.x * side > corner.x * side) then corner = t end
+    end
+    local bx = corner.x + (corner.cw - PAD - 4) * corner.cs
+    local by = corner.y + 26 * corner.cs
+    local half = round(15 * corner.cs)
+    l.button = {x = round(bx) - half, y = round(by) - half, w = 2 * half, h = 2 * half,
+                cx = bx, cy = by, tile = corner}
+  end
+
+  function fold.input()
+    local r = layout and (compact and layout.strip or layout.button)
+    return r and string.format("%d,%d,%d,%d", r.x, r.y, r.w, r.h) or ""
+  end
+
+  -- The window takes the mouse only where it should; asked again whenever
+  -- that changes, and by every helper run in case something reset it.
+  function fn.send_input()
+    if mirage_preview_sync or not layout then return end
+    local rects = fold.input()
+    if rects == input_sent then return end
+    input_sent = rects
+    os.execute("python3 " .. shell_quote(SCRIPT_DIR .. "/mirage.py") .. " input --title " ..
+               shell_quote(TITLE) .. " --input " .. shell_quote(rects) .. " >/dev/null 2>&1 &")
+  end
+
+  function fn.inside(r, x, y)
+    return r and x >= r.x and x < r.x + r.w and y >= r.y and y < r.y + r.h
+  end
+
+  -- conky calls this for the window's mouse events (lua_mouse_hook).
+  function conky_mirage_mouse(event)
+    if not layout or not layout.strip then return false end
+    if event.type ~= "button_down" or event.button ~= "left" then return false end
+    if not fn.inside(compact and layout.strip_button or layout.button, event.x, event.y) then
+      return false
+    end
+    compact = not compact
+    local file = io.open(state_file, "w")
+    if file then
+      file:write(compact and "1\n" or "0\n")
+      file:close()
+    end
+    fn.send_input()
+    return true
+  end
+
+  -- Two chevrons pointing `dir` (1 right, -1 left), on a faint round pad
+  -- so they read as something to press.
+  function fn.arrows(cr, cx, cy, dir, alpha)
+    ink(cr, 0.07 * alpha)
+    disc(cr, cx, cy, 11)
+    cairo_fill(cr)
+    ink(cr, MUTED * alpha)
+    cairo_set_line_width(cr, 1.5)
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND)
+    cairo_set_line_join(cr, CAIRO_LINE_JOIN_ROUND)
+    for _, shift in ipairs({-2.4, 2.4}) do
+      local x = cx + shift
+      cairo_new_path(cr)
+      cairo_move_to(cr, x - 2 * dir, cy - 4)
+      cairo_line_to(cr, x + 2 * dir, cy)
+      cairo_line_to(cr, x - 2 * dir, cy + 4)
+      cairo_stroke(cr)
+    end
+  end
+
+  function fn.draw_button(cr)
+    local b = layout.button
+    local t = b.tile
+    P = palette_for(t.name)
+    cairo_save(cr)
+    cairo_translate(cr, b.cx, b.cy)
+    cairo_scale(cr, t.cs, t.cs)
+    fn.arrows(cr, 0, 0, side, 1)
+    cairo_restore(cr)
+    P = BASE
+  end
+
+  -- A thin bar under a reading, warming towards the "bad" colour near full.
+  function fn.bar(cr, x, y, width, fraction)
+    cairo_set_line_cap(cr, CAIRO_LINE_CAP_ROUND)
+    cairo_set_line_width(cr, 3)
+    ink(cr, 0.14)
+    cairo_new_path(cr)
+    cairo_move_to(cr, x, y)
+    cairo_line_to(cr, x + width, y)
+    cairo_stroke(cr)
+    fraction = clamp(fraction, 0, 1)
+    if fraction > 0.01 then
+      source(cr, mixc(P.accent, P.bad, clamp((fraction - 0.75) / 0.25, 0, 1)), 1)
+      cairo_new_path(cr)
+      cairo_move_to(cr, x, y)
+      cairo_line_to(cr, x + width * fraction, y)
+      cairo_stroke(cr)
+    end
+  end
+
+  -- The readings: the machine, then its disks and battery.
+  function fn.readings()
+    local machine = {{"CPU", shown.cpu, "%"}, {"MEM", shown.mem, "%"}}
+    if hw and (hw.gpu_busy or hw.nvidia) then machine[#machine + 1] = {"GPU", shown.gpu, "%"} end
+    if info.cpu_temp then machine[#machine + 1] = {"TEMP", info.cpu_temp, "°C"} end
+    local storage = {}
+    for i, disk in ipairs(info.disks) do storage[#storage + 1] = {disk.label, shown["disk" .. i] or 0, "%"} end
+    if hw and hw.battery then storage[#storage + 1] = {"BAT", shown.bat, "%"} end
+    return machine, storage
+  end
+
+  -- The strip's boxes, top to bottom: the time, the weather and the
+  -- readings. Metro and Pixel split the readings in two and give every box
+  -- a colour of its own, as the open widget's boxes have; glass and solid
+  -- draw them all on one pane, where the boxes simply touch. The last box
+  -- runs to the bottom and holds the button. `ch` is a box's height in
+  -- content units, `y` and `h` its place in the strip's pixels.
+  function fn.sections(st)
+    local split = STYLE == "metro" or STYLE == "pixel"
+    local gap = split and round(GAP * st.s) or 0
+    local boxes = {{kind = "time", name = "strip_time", ch = 77}}
+    if weather and weather.current then
+      boxes[#boxes + 1] = {kind = "weather", name = "strip_weather", ch = 88}
+    end
+    local machine, storage = fn.readings()
+    local groups = {machine}
+    if not split then
+      for _, item in ipairs(storage) do machine[#machine + 1] = item end
+    elseif #storage > 0 then
+      groups[2] = storage
+    end
+    -- Readings sit 58 apart, closer if they must, but never under 38:
+    -- below that the last ones are left out.
+    local step = 58
+    while true do
+      local fixed = (#boxes + #groups - 1) * gap / st.cs + 44 + 69 * #groups
+      for _, b in ipairs(boxes) do fixed = fixed + (split and max(b.ch, st.cw) or b.ch) end
+      local count, spans = 0, 0
+      for _, g in ipairs(groups) do count, spans = count + #g, spans + #g - 1 end
+      step = spans > 0 and min(58, (st.ch - fixed) / spans) or 58
+      if step >= 38 or count <= 1 then break end
+      local last = groups[#groups]
+      last[#last] = nil
+      if #last == 0 then groups[#groups] = nil end
+    end
+    for i, g in ipairs(groups) do
+      boxes[#boxes + 1] = {kind = "readings", name = i == 1 and "strip_machine" or "strip_storage",
+                           ch = 69 + (#g - 1) * step, items = g, step = step, rule = not split}
+    end
+    local y = 0
+    for i, b in ipairs(boxes) do
+      -- Split, the time and the weather are square, like Metro's tiles.
+      b.dy = 0
+      if split and not b.items then
+        b.dy = max(0, st.cw - b.ch) / 2
+        b.ch = b.ch + 2 * b.dy
+      end
+      b.y, b.h = y, i == #boxes and st.h - y or round(b.ch * st.cs)
+      y = y + b.h + gap
+    end
+    boxes[#boxes].last = true
+    return boxes, split
+  end
+
+  function fn.time(cr, cx, w)
+    local hm = clock_text(os.time())
+    fitted_size(cr, DISPLAY_FONT, hm, 26, w - 14)
+    ink(cr, STRONG)
+    text(cr, hm, cx, 39, 0.5)
+    face(cr, font_medium, 8.5)
+    ink(cr, MUTED)
+    tracked(cr, upper(os.date("%a %d")), cx, 57, 1.2, 0.5)
+  end
+
+  function fn.weather(cr, cx, w, now)
+    local c = weather.current
+    weather_icon(cr, c.kind, c.level, c.is_day == 1, cx, 30, 30, now, ANIMATE)
+    fitted_size(cr, font_regular, degrees(c.temp), 17, w - 14)
+    ink(cr, STRONG)
+    text(cr, degrees(c.temp), cx, 70, 0.5)
+  end
+
+  -- Each reading: its name, the value and a bar under it.
+  function fn.reading_list(cr, cx, w, b)
+    for i, item in ipairs(b.items) do
+      local yy = 14 + (i - 1) * b.step
+      face(cr, font_medium, 8.5)
+      ink(cr, MUTED)
+      tracked(cr, fit(cr, upper(item[1]), w - 12), cx, yy + 9, 1.2, 0.5)
+      local value = round(item[2] or 0)
+      local number = item[3] == "%" and tostring(value) or degrees(value, "C")
+      face(cr, font_medium, 15)
+      local nw = advance(cr, number)
+      local sign = 0
+      if item[3] == "%" then
+        face(cr, font_regular, 9)
+        sign = advance(cr, "%") + 1
+      end
+      local x = cx - (nw + sign) / 2
+      face(cr, font_medium, 15)
+      ink(cr, STRONG)
+      text(cr, number, x, yy + 28)
+      if item[3] == "%" then
+        face(cr, font_regular, 9)
+        ink(cr, MUTED)
+        text(cr, "%", x + nw + 1, yy + 28)
+      end
+      fn.bar(cr, cx - 26, yy + 36, 52, value / 100)
+    end
+  end
+
+  function fn.box(cr, st, b, now)
+    cairo_save(cr)
+    cairo_translate(cr, st.x, st.y + b.y)
+    cairo_scale(cr, st.cs, st.cs)
+    local w, h = st.cw, b.h / st.cs
+    local cx = w / 2
+    cairo_translate(cr, 0, b.dy)
+    h = h - b.dy
+    if b.kind == "time" then
+      fn.time(cr, cx, w)
+    elseif b.kind == "weather" then
+      fn.weather(cr, cx, w, now)
+    else
+      if b.rule then
+        ink(cr, HAIR)
+        cairo_rectangle(cr, cx - 20, -2, 40, 1)
+        cairo_fill(cr)
+      end
+      fn.reading_list(cr, cx, w, b)
+    end
+    if b.last then fn.arrows(cr, cx, h - 26, -side, 1) end
+    cairo_restore(cr)
+  end
+
+  -- Part of the strip, slid by `dx` and faded to `alpha`: through a group
+  -- (clipped to `r` when there is one) only while it is fading.
+  function fn.begin(cr, r, alpha, dx)
+    cairo_save(cr)
+    cairo_translate(cr, dx, 0)
+    if alpha < 1 then
+      if r then
+        cairo_rectangle(cr, r.x, r.y, r.w, r.h)
+        cairo_clip(cr)
+      end
+      cairo_push_group(cr)
+    end
+  end
+
+  function fn.finish(cr, alpha)
+    if alpha < 1 then
+      cairo_pop_group_to_source(cr)
+      cairo_paint_with_alpha(cr, alpha)
+    end
+    cairo_restore(cr)
+  end
+
+  -- `shown` runs from 0, still tucked into the edge, to 1, all out.
+  function fn.draw_strip(cr, now, shown_strip)
+    local st = layout.strip
+    local intro = ease_out((now - start_time) / 0.6)
+    if intro <= 0 then return end
+    prepare(cr)
+    room = st.cw
+    local boxes, split = fn.sections(st)
+    local f = fade_amount(now)
+    local slide = 14 * layout.s * side
+    if split then
+      -- A box at a time, each a beat behind the one above it.
+      local span = 1 - 0.07 * (#boxes - 1)
+      for i, b in ipairs(boxes) do
+        local k = clamp((shown_strip - 0.07 * (i - 1)) / span, 0, 1)
+        if k > 0 then
+          local alpha = fn.smooth(k) * intro
+          local r = {x = st.x, y = st.y + b.y, w = st.w, h = b.h, s = st.s}
+          P = palette_for(b.name)
+          fn.begin(cr, r, alpha, (1 - k) * slide)
+          draw_background(cr, r, 1, f)
+          fn.box(cr, st, b, now)
+          fn.finish(cr, alpha)
+        end
+      end
+    else
+      local alpha = fn.smooth(shown_strip) * intro
+      P = palette_for("system")
+      fn.begin(cr, nil, alpha, (1 - shown_strip) * slide)
+      local shadow_now, shadow_was = glass.strip_shadow, glass_old.strip_shadow
+      if shadow_was and f < 1 then
+        cairo_set_source_surface(cr, shadow_was, 0, 0)
+        cairo_paint_with_alpha(cr, OPAQUE * (1 - f))
+      end
+      if shadow_now then
+        cairo_set_source_surface(cr, shadow_now, 0, 0)
+        cairo_paint_with_alpha(cr, OPAQUE * (shadow_was and f or 1))
+      end
+      draw_background(cr, st, 1, f)
+      for _, b in ipairs(boxes) do fn.box(cr, st, b, now) end
+      fn.finish(cr, alpha)
+    end
+    P = BASE
+  end
+
+  function fn.smooth(t) return t * t * (3 - 2 * t) end
+
+  function fold.frame(cr, target, now, dt)
+    if not layout.strip then return draw_frame(cr, target, now) end
+    local goal = compact and 1 or 0
+    if mirage_preview_still then
+      amount = goal
+    elseif amount ~= goal then
+      local step = dt / FOLD_TIME
+      amount = goal > amount and min(goal, amount + step) or max(goal, amount - step)
+    end
+    fn.send_input()
+    local e = fn.smooth(amount)
+    -- The boxes fade and draw in towards the edge; the strip follows them
+    -- in from that edge.
+    local boxes = 1 - clamp(e * 1.6, 0, 1)
+    if boxes >= 1 then
+      draw_frame(cr, target, now)
+      fn.draw_button(cr)
+    elseif boxes > 0 then
+      local st = layout.strip
+      local edge = side > 0 and st.x + st.w or st.x
+      cairo_save(cr)
+      cairo_translate(cr, edge, 0)
+      cairo_scale(cr, 1 - 0.08 * e, 1)
+      cairo_translate(cr, -edge, 0)
+      cairo_push_group(cr)
+      draw_frame(cr, target, now)
+      fn.draw_button(cr)
+      cairo_pop_group_to_source(cr)
+      cairo_paint_with_alpha(cr, boxes)
+      cairo_restore(cr)
+    end
+    local shown_strip = clamp((e - 0.35) / 0.65, 0, 1)
+    if shown_strip > 0 then
+      fn.draw_strip(cr, now, shown_strip)
+    end
+  end
+end
+
 local function drop_layout()
   if not layout then return end
   for _, tile in ipairs(layout.tiles) do
@@ -2684,6 +3088,7 @@ function conky_mirage()
   if resized then
     drop_layout()
     layout = compute_layout(W, H)
+    fold.add(layout)
     check_window(W, H)
   end
 
@@ -2698,7 +3103,7 @@ function conky_mirage()
   update_palette(now)
 
   local cr = cairo_create(cs)
-  draw_frame(cr, cs, now)
+  fold.frame(cr, cs, now, dt)
   cairo_destroy(cr)
   if owns_surface then cairo_surface_destroy(cs) end
 end

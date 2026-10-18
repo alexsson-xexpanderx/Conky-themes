@@ -8,7 +8,7 @@ Each box is a blurred piece of the wallpaper behind it, and the colours come fro
 the wallpaper too. Change your wallpaper and the widget follows a couple of
 seconds later.
 
-![Changing wallpapers and looks](conky-mirage.gif)
+![Changing looks and wallpapers, and folding it away](conky-mirage.gif)
 
 It shows the time, the weather now, the next 24 hours and the next 7 days, wind,
 humidity, UV, air quality, sunrise and sunset, the moon, and your CPU, memory,
@@ -54,6 +54,17 @@ the preview.
 ![The four looks](styles.png)
 
 ![Settings window](screenshot_settings.png)
+
+## Fold it away
+
+Click the two small arrows in the top corner and the widget folds into a slim
+strip at the edge of your screen, with the time, the weather and your
+computer's numbers. The arrows at the bottom of the strip open it again. It
+stays the way you leave it. In Metro and Pixel the strip is made of small
+boxes in the same colours as the open widget. To see it folded in the
+settings window, pick Folded above the preview.
+
+![Open and folded](folded.png)
 
 ## Wallpapers
 

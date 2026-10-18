@@ -92,6 +92,8 @@ conky.config = {
 
     lua_load = 'mirage.lua',
     lua_draw_hook_pre = 'mirage',
+    -- Clicks on the fold button; only the button, or the folded strip, takes them.
+    lua_mouse_hook = 'mirage_mouse',
 }
 
 if version >= 125 then

@@ -608,6 +608,57 @@ and then says just "Rain" before it gives the rain up where the tile is narrow),
 sunrise, which the user read as rain and disliked), and the wind hub is 19 units across so the
 unit clears its edge.
 
+#### Folding into a strip
+
+A button (two chevrons on a faint pad) in the top right corner of the top tile on the strip's
+side folds the widget into a slim strip, `STRIP_W` (92) content units wide and exactly as tall
+as the tiles, on the side of the window nearest the screen edge (`left` in
+`start_conky_mirage`'s `position` puts it on the left). The strip shows the time, the weather
+and the machine (CPU, MEM, GPU, TEMP, each disk, BAT), each a value over a thin bar, and the
+button that opens it again at its foot. The user asked for it to be as tall as the widget, not
+the screen. Everything lives in one `do` block; `fold.add`, `fold.frame` and `fold.input` are
+what the rest of the file calls.
+
+- **The window never changes size.** Conky cannot resize its window, so folding only draws
+  differently in the same one; the boxes fade and draw in 8% towards the edge while the strip
+  slides out of it (`FOLD_TIME`, eased both ways, reversible mid-fold).
+- **Metro and Pixel keep their look folded.** The user asked for this after the first strip
+  was one pane in one colour. There the strip is a column of boxes, `tile_gap` apart: the
+  time and the weather (square, like Metro's tiles), the machine (CPU to TEMP) and the disks
+  and battery, the last running to the bottom with the button. Each box has a palette name
+  (`strip_time` ... `strip_storage`) in `METRO_TILE`/`PIXEL_TILE`, in the order the open
+  widget uses (Metro 1-4; Pixel primary, tertiary, secondary, surface). The boxes slide out
+  0.07 of the fold apart, top first. Glass and solid stay one pane: the glass is one
+  rendered PNG. `fn.sections` lays out both cases; a box goes through a group (clipped to
+  itself) only while it is fading, so a settled strip costs no window-sized group a frame.
+- **The mouse.** conky 1.25 gives an undecorated window an *empty* input area, so the widget is
+  click-through, which is right for the boxes but leaves a button dead. `mirage.py input`
+  sets the window's input shape (`XShapeCombineRectangles`, through ctypes) to the button
+  when open and to the whole strip when folded, so the rest of the window keeps letting
+  clicks through. The Lua asks for it whenever the rectangle changes, and every helper run
+  passes `--input` again in case something reset it. `lua_mouse_hook = 'mirage_mouse'` in
+  `start_conky_mirage` delivers the clicks to `conky_mirage_mouse`; only `button_down` with
+  the left button inside the button counts (folded: the strip's bottom 52 units). No hover
+  effects: the Retrograde dashboard found XWayland's enter/leave positions unreliable.
+- **Its glass.** The helper renders `glass_strip.png` (solved on its own patch, then pulled
+  towards the tiles' darkest like any tile) and `shadow_strip.png` from `--strip`, but keeps
+  the strip out of the tiles' solve and their shared `shadow.png`; it would otherwise darken
+  the gaps of the open widget where it lies unseen. The strip's glass arrives in the theme's
+  `tiles` list, keyed by its rectangle like a tile, and its shadow as `glass.strip_shadow`, so
+  both crossfade with a wallpaper change like everything else.
+- **The state** is `compact` in the cache ("1" folded), read at load. Previews ignore it;
+  `MIRAGE_PREVIEW_COMPACT=1` renders the folded strip. A preview also sets
+  `mirage_preview_position` from its `where` argument, since the side otherwise comes from
+  the saved `start_conky_mirage` and the settings window previews an unsaved position. The
+  settings window has an Open/Folded switch beside the view picker that renders either.
+- **Locals.** The block's helpers live in a table (`fn`) and its exports in `fold`: the block's
+  own locals count against the 200 while it is in scope, and a dozen helper names pushed the
+  file over.
+- **Testing clicks.** Run a copy of the folder with its own title (`TITLE` and
+  `own_window_title`) and `XDG_CACHE_HOME` on Xvfb, read its input shape with
+  `XShapeGetRectangles`, and click with `XTestFakeButtonEvent`; that is how the fold was
+  checked end to end in real conky. Do not click on the user's display: it moves their pointer.
+
 #### Wallpapers
 
 `Conky-Mirage/wallpapers/make_wallpapers.py` (numpy + Pillow) draws twelve wallpapers, three
@@ -668,7 +719,12 @@ and draws two frames a second apart (CPU needs two samples) — about half a sec
 `mirage_preview_refresh` makes the next frame run the helper; the demo video was made by
 switching `wallpaper` and setting it.
 
-The demo video shows each look on its three wallpapers. A look is read once at load, so it
+The demo video goes Solid, Pixel, Metro, Glass, the order the user asked for, with Solid
+starting on the pale Dunes (they wanted it to open on a white background). Each look opens
+on its first wallpaper, a pointer clicks the fold button and then the strip's, and the look
+goes on through its other two wallpapers: about 65s, so the clock turns over once, during
+Glass. The clicks are real (`conky_mirage_mouse` on given frames); the pointer and its click
+ring are drawn in Python over the composited frame. A look is read once at load, so it
 is four runs of the script (one per look) on one shared fake timeline, and the whole scene
 dissolves over 22 frames where the look changes. For the runs to agree there, every run
 starts at frame 0 and renders silently up to its first written frame; CPU, memory, network,
@@ -683,7 +739,8 @@ wallpaper at full size (888x996). Stills for posting live in `Conky-Mirage/previ
 looks and all twelve wallpapers on the desktop, in several widths; `close-ups/` crops to the
 widget). The user wants such files in the repo, not in ~/Pictures. Each wallpaper is held 105 frames, because the widget takes about
 2.6s to finish recolouring after a change (half a second to notice, a poll, the 1.6s fade);
-at 88 it never settled. `av1_vaapi` ignores `-qp` (use `-rc_mode CQP -global_quality 90`) and
+at 88 it never settled. Pictures and videos pin `text_size` to 1.00: the user runs 120%, and
+at that the widget is taller than every crop. `av1_vaapi` ignores `-qp` (use `-rc_mode CQP -global_quality 90`) and
 pads the height to a multiple of 16 with black rows, so the webm is cropped to 1920x800.
 
 `mirage_settings.py` follows the orrery editor's conventions (canvas-drawn controls, candidate

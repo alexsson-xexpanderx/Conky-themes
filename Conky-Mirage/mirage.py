@@ -874,8 +874,7 @@ def render_theme(args, wallpaper, monitor, window, tiles, cache):
             return tuple(c * m for c in rgb)
         return tuple(1 - (1 - c) * m for c in rgb)
 
-    amounts = []
-    for (tx, ty, tw, th) in tiles:
+    def solve(tx, ty, tw, th):
         patch = frosted.crop((tx, ty, tx + tw, ty + th)).resize((48, 48), Image.BOX)
         lumas = sorted((luminance(tuple(c / 255 for c in p)), p) for p in flat(patch))
         pick = lumas[int(len(lumas) * (0.94 if dark else 0.06))][1]
@@ -889,7 +888,9 @@ def render_theme(args, wallpaper, monitor, window, tiles, cache):
                 else:
                     high = mid
             high = low
-        amounts.append(high)
+        return high
+
+    amounts = [solve(*tile) for tile in tiles]
     # Tiles that differ a lot read as different materials, so pull each part
     # of the way towards the darkest.
     darkest = min(amounts) if amounts else 0.9
@@ -898,8 +899,7 @@ def render_theme(args, wallpaper, monitor, window, tiles, cache):
     tint_rgb = tuple(int(c * 255) for c in tint)
     ss = 4
     radius = args.radius
-    images = []
-    for index, ((tx, ty, tw, th), amount) in enumerate(zip(tiles, amounts)):
+    def pane(tx, ty, tw, th, amount, name):
         glass = frosted.crop((tx, ty, tx + tw, ty + th))
         glass = Image.blend(glass, Image.new("RGB", glass.size, tint_rgb), tint_amount)
         if dark:
@@ -941,31 +941,49 @@ def render_theme(args, wallpaper, monitor, window, tiles, cache):
         glass = Image.composite(Image.new("RGB", glass.size, (255, 255, 255)), glass, edge)
 
         glass.putalpha(mask)
-        name = f"glass_{index + 1}.png"
         glass.save(os.path.join(cache, name), optimize=False, compress_level=1)
-        images.append({"file": name, "x": tx, "y": ty, "w": tw, "h": th, "tint": round(amount, 3)})
+        return {"file": name, "x": tx, "y": ty, "w": tw, "h": th, "tint": round(amount, 3)}
 
-    # One shadow under everything, so neighbouring tiles' shadows merge
-    # instead of stacking up in the gaps.
-    shadow_mask = Image.new("L", (window["w"], window["h"]), 0)
-    draw = ImageDraw.Draw(shadow_mask)
-    drop = 5 * s
-    for (tx, ty, tw, th) in tiles:
-        draw.polygon(superellipse_polygon(tx, ty + drop, tw, th, radius), fill=255)
-    shadow_mask = shadow_mask.filter(ImageFilter.GaussianBlur(16 * s))
-    strength = args.shadow * (1.0 if dark else 0.55)
-    shadow_mask = shadow_mask.point(lambda v: int(v * strength))
-    shade_rgb = tuple(int(c * 255) for c in palette["shade"])
-    shadow = Image.new("RGB", shadow_mask.size, shade_rgb)
-    shadow.putalpha(shadow_mask)
-    shadow.save(os.path.join(cache, "shadow.png"), compress_level=1)
+    images = [pane(*tile, amount, f"glass_{index + 1}.png")
+              for index, (tile, amount) in enumerate(zip(tiles, amounts))]
+
+    def shadow_of(rects, name):
+        # One shadow under everything, so neighbouring tiles' shadows merge
+        # instead of stacking up in the gaps.
+        shadow_mask = Image.new("L", (window["w"], window["h"]), 0)
+        draw = ImageDraw.Draw(shadow_mask)
+        drop = 5 * s
+        for (tx, ty, tw, th) in rects:
+            draw.polygon(superellipse_polygon(tx, ty + drop, tw, th, radius), fill=255)
+        shadow_mask = shadow_mask.filter(ImageFilter.GaussianBlur(16 * s))
+        strength = args.shadow * (1.0 if dark else 0.55)
+        shadow_mask = shadow_mask.point(lambda v: int(v * strength))
+        shade_rgb = tuple(int(c * 255) for c in palette["shade"])
+        shadow = Image.new("RGB", shadow_mask.size, shade_rgb)
+        shadow.putalpha(shadow_mask)
+        shadow.save(os.path.join(cache, name), compress_level=1)
+
+    shadow_of(tiles, "shadow.png")
     under.save(os.path.join(cache, "under.png"), compress_level=1)
+
+    # The folded strip: the same glass, solved on its own patch and pulled
+    # towards the tiles' darkest like any tile, but kept out of their
+    # solve and their shadow, which it would otherwise change while unseen.
+    strip = parse_tiles(args.strip)
+    strip_extra = {}
+    if strip:
+        tile = strip[0]
+        amount = solve(*tile)
+        images.append(pane(*tile, amount + (darkest - amount) * 0.35, "glass_strip.png"))
+        shadow_of([tile], "shadow_strip.png")
+        strip_extra = {"strip_shadow": "shadow_strip.png"}
 
     theme = dict(palette)
     theme.update({
         "glass": True,
         "tiles": images,
         "shadow": "shadow.png",
+        **strip_extra,
         "wallpaper": wallpaper.get("path") or "solid colour",
         "source": wallpaper.get("source", ""),
         "id": int(time.time() * 1000) % 2_000_000_000,
@@ -1020,7 +1038,8 @@ def theme_step(args, cache, state):
 
     # The script's own mtime is in the signature so that updating it re-renders.
     signature = hashlib.sha1(json.dumps([
-        VERSION, os.path.getmtime(os.path.abspath(__file__)), fingerprint, monitor, window, tiles, args.radius, args.mode, args.blur, args.tint,
+        VERSION, os.path.getmtime(os.path.abspath(__file__)), fingerprint, monitor, window, tiles, args.strip,
+        args.radius, args.mode, args.blur, args.tint,
         args.accent, args.vibrancy, args.shadow, args.scale]).encode()).hexdigest()
     if state.get("theme_signature") == signature and not args.force \
             and os.path.isfile(os.path.join(cache, "theme.lua")):
@@ -1052,6 +1071,71 @@ def write_theme(cache, theme):
         return [round(c, 4) for c in value] if isinstance(value, tuple) else value
     clean = {k: rgb(v) for k, v in theme.items()}
     write_atomically(os.path.join(cache, "theme.lua"), "return " + lua_value(clean) + "\n")
+
+
+def set_input(title, rects):
+    """Make only `rects` (window pixels) of the widget's window take the
+    mouse; everywhere else clicks go through to the desktop. conky 1.25 gives
+    an undecorated window no input area at all, which is right for the boxes
+    but leaves the fold button dead. Done with Xlib through ctypes, so it
+    costs no more than starting Python."""
+    import ctypes
+
+    try:
+        xlib, xext = ctypes.CDLL("libX11.so.6"), ctypes.CDLL("libXext.so.6")
+    except OSError:
+        return False
+
+    class Rect(ctypes.Structure):
+        _fields_ = [("x", ctypes.c_short), ("y", ctypes.c_short),
+                    ("width", ctypes.c_ushort), ("height", ctypes.c_ushort)]
+
+    ulong_p = ctypes.POINTER(ctypes.c_ulong)
+    xlib.XOpenDisplay.restype = ctypes.c_void_p
+    xlib.XOpenDisplay.argtypes = [ctypes.c_char_p]
+    xlib.XDefaultRootWindow.restype = ctypes.c_ulong
+    xlib.XDefaultRootWindow.argtypes = [ctypes.c_void_p]
+    xlib.XQueryTree.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ulong_p, ulong_p,
+                                ctypes.POINTER(ulong_p), ctypes.POINTER(ctypes.c_uint)]
+    xlib.XFetchName.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_void_p)]
+    xlib.XFree.argtypes = [ctypes.c_void_p]
+    xlib.XSync.argtypes = [ctypes.c_void_p, ctypes.c_int]
+    xlib.XCloseDisplay.argtypes = [ctypes.c_void_p]
+    xext.XShapeCombineRectangles.argtypes = [ctypes.c_void_p, ctypes.c_ulong, ctypes.c_int, ctypes.c_int,
+                                             ctypes.c_int, ctypes.POINTER(Rect), ctypes.c_int,
+                                             ctypes.c_int, ctypes.c_int]
+    display = xlib.XOpenDisplay(None)
+    if not display:
+        return False
+    # A window that closes while the tree is walked would otherwise end the
+    # program through Xlib's default error handler.
+    handler = ctypes.CFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p)(lambda d, e: 0)
+    xlib.XSetErrorHandler(handler)
+
+    wanted, found, stack = title.encode(), [], [xlib.XDefaultRootWindow(display)]
+    while stack:
+        window = stack.pop()
+        name = ctypes.c_void_p()
+        if xlib.XFetchName(display, window, ctypes.byref(name)) and name.value:
+            if ctypes.string_at(name.value) == wanted:
+                found.append(window)
+            xlib.XFree(name)
+        root, parent = ctypes.c_ulong(), ctypes.c_ulong()
+        children, count = ulong_p(), ctypes.c_uint()
+        if xlib.XQueryTree(display, window, ctypes.byref(root), ctypes.byref(parent),
+                           ctypes.byref(children), ctypes.byref(count)):
+            stack.extend(children[i] for i in range(count.value))
+            if children:
+                xlib.XFree(ctypes.cast(children, ctypes.c_void_p))
+
+    shape_input, shape_set, unsorted = 2, 0, 0
+    boxes = (Rect * max(1, len(rects)))(*[Rect(x, y, w, h) for x, y, w, h in rects])
+    for window in found:
+        xext.XShapeCombineRectangles(display, window, shape_input, 0, 0, boxes, len(rects),
+                                     shape_set, unsorted)
+    xlib.XSync(display, 0)
+    xlib.XCloseDisplay(display)
+    return bool(found)
 
 
 def parse_tiles(text):
@@ -1351,13 +1435,16 @@ def weather_step(args, cache, state, force=False):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("command", choices=("tick", "theme", "weather", "doctor"), nargs="?", default="tick")
+    parser.add_argument("command", choices=("tick", "theme", "weather", "doctor", "input"), nargs="?",
+                        default="tick")
     parser.add_argument("--cache", default=os.path.join(os.environ.get(
         "XDG_CACHE_HOME", os.path.expanduser("~/.cache")), "conky-mirage"))
     parser.add_argument("--title", default="conky-mirage")
     parser.add_argument("--window", default="0x0", help="WxH, used with --at")
     parser.add_argument("--at", default="", help="X,Y of the window, instead of asking X")
     parser.add_argument("--tiles", default="", help="x,y,w,h;... in window pixels")
+    parser.add_argument("--strip", default="", help="x,y,w,h of the folded strip")
+    parser.add_argument("--input", default=None, help="x,y,w,h;... that take the mouse")
     parser.add_argument("--radius", type=float, default=22)
     parser.add_argument("--scale", type=float, default=1.0)
     parser.add_argument("--wallpaper", default="auto")
@@ -1380,6 +1467,9 @@ def main():
     os.makedirs(cache, exist_ok=True)
     global TWELVE_HOUR
     TWELVE_HOUR = args.clock == "12h"
+
+    if args.command == "input":
+        return 0 if set_input(args.title, parse_tiles(args.input)) else 1
 
     if args.command == "doctor":
         window = window_geometry(args.title)
@@ -1407,6 +1497,10 @@ def main():
 
     state = load_state(cache)
     changed = False
+    # conky 1.25 gives its window no input area; every run puts back the
+    # parts that take the mouse, in case anything reset them.
+    if args.input is not None and not args.at:
+        set_input(args.title, parse_tiles(args.input))
     try:
         if args.command in ("tick", "theme"):
             changed |= theme_step(args, cache, state)
