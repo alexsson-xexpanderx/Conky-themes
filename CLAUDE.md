@@ -118,10 +118,13 @@ glow pile up and the render comes out far brighter than the real thing.
 Conky-Mirage has its own harness, `Conky-Mirage/mirage_preview.lua`, which works differently
 (overrides instead of a script copy, a synchronous helper, a still mode); see its section below.
 
-A GUI cannot be screenshotted on the Wayland session either, but unlike conky it can be pointed at
-a virtual X server that *can* be captured — `Xvfb :99 -screen 0 1400x1000x24`, run the program with
-`DISPLAY=:99`, then `ffmpeg -f x11grab -draw_mouse 0`. Without `-draw_mouse 0` the pointer is baked
-into the middle of the grab.
+A GUI cannot be grabbed off the whole screen either, but it can be pointed at a virtual X server
+that *can* be captured — `Xvfb :99 -screen 0 1400x1000x24`, run the program with `DISPLAY=:99`,
+then `ffmpeg -f x11grab -draw_mouse 0`. Without `-draw_mouse 0` the pointer is baked into the
+middle of the grab. One X11 window on the real display *can* be captured, though: `import -window
+<id>` with the window's frame id (`app.wm_frame()` from Tk) reads that window alone. Use it to see
+what the user sees: Xvfb is not the same, and on the real display Mirage's settings window opens
+26px taller (text draws larger there) and showed glitches Xvfb did not make obvious.
 
 Do not use `pkill -f` to clean up test processes here. The Bash tool wraps each command in a shell
 whose own command line contains the pattern, so `pkill -f 'conky -c start_conky_orrery'` kills the
@@ -701,6 +704,11 @@ The **Look** section picks `style` (a string, matched by `STYLE_RE` and written 
 like the numbers) and `transparency`. **Reload** drops the editor's copy of the desktop and its
 scaled views and renders again, so a wallpaper changed while the window is open shows up; the
 preview's helper re-renders its glass by itself, since its signature includes the wallpaper.
+
+The sliders match the orrery editor's: no mark for the default (a short line at the default
+read as a stray line on the track to the user; double-click still resets), and the lit part of
+the track is drawn only once it reaches more than 18px from the handle's edge, since a few lit
+pixels beside a handle near the start (40 of 720 for "From the top") read as a speck.
 
 What a control does is shown in a **tooltip** (`Tooltip`), never in the status line: the status
 line used to wrap onto two lines for a long hint and the whole window jumped. The status label

@@ -68,7 +68,7 @@ font_display = "Noto Sans Light" -- the big clock and temperature
 -- Sizes. Easiest to change with ./mirage_settings.py, which shows a preview.
 -- If you change them here instead, look at what Conky prints when it starts:
 -- it tells you what to put in start_conky_mirage.
-text_size        = 1.00          -- all text (the boxes grow to fit)
+text_size        = 1.20          -- all text (the boxes grow to fit)
 clock_size       = 1.00          -- the big clock
 temperature_size = 1.00          -- the big temperature
 caption_size     = 1.00          -- the small titles at the top of each box

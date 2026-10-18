@@ -18,7 +18,7 @@ local margin_x, margin_y = 40, 40
 local fps = 10
 
 -- The widget's normal size. mirage_settings.py fills this in for you.
-local base_width, base_height = 816, 906
+local base_width, base_height = 816, 1071
 
 ---------------------------------------------------------------------------
 

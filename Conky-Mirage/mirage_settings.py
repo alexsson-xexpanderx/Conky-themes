@@ -522,8 +522,8 @@ class Button(tk.Canvas):
 
 class Slider(tk.Canvas):
     """Track, filled portion and a round handle. Click to jump, drag to scrub;
-    the mouse wheel and the arrow keys step. Values snap to `step`. A tick
-    marks the shipped default, and a double-click goes back to it."""
+    the mouse wheel and the arrow keys step. Values snap to `step`, and a
+    double-click goes back to the shipped default."""
 
     H = 26
 
@@ -597,13 +597,13 @@ class Slider(tk.Canvas):
         self.delete("all")
         mid = self.H / 2
         rounded(self, 10, mid - 2, self.w - 10, mid + 2, 2, fill=SUNKEN, outline=BORDER)
-        dx = self._x(self.default)
-        self.create_line(dx, mid - 7, dx, mid + 7, fill=BORDER_LIT, width=1)
         x = self._x(self.value)
         lit = ACCENT if self.enabled else FAINT
-        if x > 12:
-            rounded(self, 10, mid - 2, x, mid + 2, 2, fill=lit, outline=lit)
         r = 8 if (self.active or self.hover) and self.enabled else 6.5
+        # Only once the lit part reaches well out from under the handle: a
+        # few lit pixels beside it, near the start of the track, read as a speck.
+        if x - r > 18:
+            rounded(self, 10, mid - 2, x, mid + 2, 2, fill=lit, outline=lit)
         ring = lit if (self.active or self.hover) and self.enabled else BORDER_LIT
         self.create_oval(x - r, mid - r, x + r, mid + r, fill=SURFACE, outline=ring, width=2)
 
