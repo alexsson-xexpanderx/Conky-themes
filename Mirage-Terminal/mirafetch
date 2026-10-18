@@ -1,0 +1,566 @@
+#!/usr/bin/env python3
+"""mirafetch: your system at a glance, in the look of Conky-Mirage and
+ConkyTray, beside your system's logo drawn in that look (or the wallpaper
+the looks take their colours from).
+
+    mirafetch                    in the look the terminal follows
+    mirafetch --look metro       in another look: glass, solid, metro or pixel
+    mirafetch --beside logo      your system's logo beside the facts (wallpaper,
+                                 or none for nothing); the setting is "beside"
+                                 in terminal_palette.py
+"""
+
+import concurrent.futures
+import os
+import re
+import shutil
+import subprocess
+import sys
+import unicodedata
+
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+import terminal_palette as T   # noqa: E402
+
+M = T.M
+RESET, BOLD = "\033[0m", "\033[1m"
+
+
+def fg(c):
+    return "\033[38;2;%d;%d;%dm" % tuple(max(0, min(255, round(v * 255))) for v in c)
+
+
+def bg(c):
+    return "\033[48;2;%d;%d;%dm" % tuple(max(0, min(255, round(v * 255))) for v in c)
+
+
+def width(text):
+    """How many cells `text` takes on screen, escapes left out."""
+    plain = re.sub(r"\033\[[0-9;]*m", "", text)
+    return sum(2 if unicodedata.east_asian_width(ch) in "WF" else 0 if unicodedata.combining(ch) else 1
+               for ch in plain)
+
+
+def fit(text, room):
+    """Cut to `room` cells with an ellipsis."""
+    if width(text) <= room:
+        return text
+    out = ""
+    for ch in text:
+        if width(out + ch) > room - 1:
+            break
+        out += ch
+    return out.rstrip() + "…"
+
+
+def pad(text, room):
+    return text + " " * max(0, room - width(text))
+
+
+# ------------------------------------------------------------------ the facts
+
+def read(path):
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            return handle.read()
+    except OSError:
+        return ""
+
+
+def run(argv, timeout=2):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout).stdout
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def os_name():
+    text = read("/etc/os-release")
+    m = re.search(r'^PRETTY_NAME="?([^"\n]+)', text, re.M)
+    name = m.group(1) if m else "Linux"
+    return name + " " + os.uname().machine if os.uname().machine not in name else name
+
+
+def host_model():
+    for name in ("product_name", "board_name"):
+        value = read("/sys/devices/virtual/dmi/id/" + name).strip()
+        if value and not re.search(r"to be filled|system product name|default string|^none$", value, re.I):
+            vendor = read("/sys/devices/virtual/dmi/id/board_vendor" if name == "board_name"
+                          else "/sys/devices/virtual/dmi/id/sys_vendor").strip()
+            vendor = re.sub(r"\b(Inc\.?|Co\.,? ?Ltd\.?|Corporation|COMPUTER|INC\.?)\b", "", vendor, flags=re.I).strip(" ,.")
+            return (vendor + " " + value).strip() if vendor and vendor.lower() not in value.lower() else value
+    return ""
+
+
+def uptime():
+    try:
+        seconds = int(float(read("/proc/uptime").split()[0]))
+    except (IndexError, ValueError):
+        return ""
+    days, hours, mins = seconds // 86400, seconds // 3600 % 24, seconds // 60 % 60
+    parts = []
+    if days:
+        parts.append("%d day%s" % (days, "" if days == 1 else "s"))
+    if hours:
+        parts.append("%d hour%s" % (hours, "" if hours == 1 else "s"))
+    if not days:
+        parts.append("%d min%s" % (mins, "" if mins == 1 else "s"))
+    return ", ".join(parts)
+
+
+def packages():
+    counts = []
+    for path, kind in (("/var/lib/pkgtools/packages", "pkgtools"), ("/var/log/packages", "pkgtools"),
+                       ("/var/lib/dpkg/info", None), ("/var/lib/pacman/local", "pacman")):
+        if os.path.isdir(path) and kind:
+            counts.append("%d (%s)" % (len(os.listdir(path)), kind))
+            break
+    flatpaks = 0
+    for root in ("/var/lib/flatpak/app", os.path.expanduser("~/.local/share/flatpak/app")):
+        if os.path.isdir(root):
+            flatpaks += len(os.listdir(root))
+    if flatpaks:
+        counts.append("%d (flatpak)" % flatpaks)
+    return ", ".join(counts)
+
+
+def shell():
+    path = os.environ.get("SHELL", "")
+    name = os.path.basename(path)
+    m = re.search(r"(\d+\.\d+(\.\d+)?)", run([path, "--version"]) if path else "")
+    return "%s %s" % (name, m.group(1)) if m else name
+
+
+def desktop():
+    session = (os.environ.get("XDG_SESSION_TYPE") or "").capitalize()
+    current = os.environ.get("XDG_CURRENT_DESKTOP", "")
+    if "KDE" in current:
+        m = re.search(r"(\d+\.\d+(\.\d+)?)", run(["plasmashell", "--version"]))
+        name = "KDE Plasma" + (" " + m.group(1) if m else "")
+    else:
+        name = current or os.environ.get("DESKTOP_SESSION", "")
+    return "%s (%s)" % (name, session) if name and session else name or session
+
+
+def terminal():
+    version = os.environ.get("KONSOLE_VERSION", "")
+    if version.isdigit() and len(version) >= 6:
+        return "Konsole %d.%02d.%d" % (int(version[:-4]), int(version[-4:-2]), int(version[-2:]))
+    pid = os.getppid()
+    for _ in range(6):                       # up the process tree to the terminal
+        name = read("/proc/%d/comm" % pid).strip()
+        if name and name not in ("bash", "zsh", "fish", "sh", "python3", "sudo", "su", "tmux: server"):
+            return name.capitalize() if name.islower() else name
+        try:
+            pid = int(read("/proc/%d/stat" % pid).rsplit(")", 1)[1].split()[1])
+        except (IndexError, ValueError):
+            break
+    return os.environ.get("TERM", "")
+
+
+def cpu():
+    text = read("/proc/cpuinfo")
+    m = re.search(r"^model name\s*:\s*(.+)$", text, re.M)
+    if not m:
+        return ""
+    name = re.sub(r"\((R|TM)\)|CPU|Processor|\d+-Core|@.*$", "", m.group(1), flags=re.I)
+    threads = len(re.findall(r"^processor\s*:", text, re.M))
+    return "%s (%d)" % (re.sub(r"\s+", " ", name).strip(), threads)
+
+
+def gpus():
+    found = []
+    for line in run(["lspci", "-mm"]).splitlines():
+        parts = re.findall(r'"([^"]*)"', line)
+        if len(parts) >= 3 and re.search(r"VGA|3D|Display", parts[0]):
+            raw = parts[1]
+            vendor = ("AMD" if re.search(r"AMD|ATI|Advanced Micro", raw) else "NVIDIA" if "NVIDIA" in raw.upper()
+                      else "Intel" if "Intel" in raw else raw.split()[0] if raw else "")
+            device = re.search(r"\[([^\]]+)\]", parts[2])
+            # "Radeon RX 7900 XT/7900 XTX/7900 GRE/7900M": lspci cannot tell which; the first.
+            name = (device.group(1) if device else parts[2]).split("/")[0].strip()
+            found.append(("%s %s" % (vendor, name)).strip())
+    return found
+
+
+def resolution():
+    sizes = re.findall(r"(\d+)/\d+x(\d+)/\d+\+\d+\+\d+", run(["xrandr", "--listmonitors"]))
+    return ", ".join("%sx%s" % s for s in sizes)
+
+
+def memory():
+    info = dict(re.findall(r"^(\w+):\s+(\d+)", read("/proc/meminfo"), re.M))
+    try:
+        total, free = int(info["MemTotal"]) * 1024, int(info["MemAvailable"]) * 1024
+    except KeyError:
+        return None
+    return total - free, total
+
+
+def disk(path="/"):
+    try:
+        st = os.statvfs(path)
+    except OSError:
+        return None
+    total = st.f_blocks * st.f_frsize
+    return total - st.f_bavail * st.f_frsize, total
+
+
+def gib(n):
+    return "%.1f" % (n / 1024 ** 3) if n < 100 * 1024 ** 3 else "%d" % round(n / 1024 ** 3)
+
+
+def wallpaper_name(path):
+    if not path:
+        return ""
+    m = re.search(r"/wallpapers/([^/]+)/contents/", path)
+    name = m.group(1) if m else os.path.splitext(os.path.basename(path))[0]
+    # Mirage's own are named after their look: MirageGlassAfterglow is Afterglow.
+    name = re.sub(r"^Mirage(Glass|Solid|Metro|Pixel)?", "", name) or name
+    return re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
+
+
+def facts():
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        slow = {name: pool.submit(fn) for name, fn in
+                (("shell", shell), ("desktop", desktop), ("gpus", gpus), ("resolution", resolution))}
+        got = {name: f.result() for name, f in slow.items()}
+    rows = [("OS", os_name()), ("Host", host_model()), ("Kernel", os.uname().release), ("Uptime", uptime()),
+            ("Packages", packages()), ("Shell", got["shell"]), ("Desktop", got["desktop"]),
+            ("Terminal", terminal()), ("Screen", got["resolution"]), ("CPU", cpu())]
+    for i, gpu in enumerate(got["gpus"][:2]):
+        rows.append(("GPU" if i == 0 else "", gpu))
+    return [(k, v) for k, v in rows if v]
+
+
+# ---------------------------------------------------------------- the picture
+
+def blocks(image, cols, rows, behind):
+    """A picture in `cols` x `rows` cells, two pixels a cell (the upper half
+    as the text colour, the lower as the background, of a "▀"), laid on the
+    terminal's background where it is see-through."""
+    from PIL import Image
+    ground = Image.new("RGBA", image.size, tuple(round(c * 255) for c in behind) + (255,))
+    ground.alpha_composite(image.convert("RGBA"))
+    px = ground.convert("RGB").resize((cols, rows * 2), Image.LANCZOS).load()
+    lines = []
+    for y in range(rows):
+        line = ""
+        for x in range(cols):
+            top, bottom = px[x, 2 * y], px[x, 2 * y + 1]
+            line += "\033[38;2;%d;%d;%dm\033[48;2;%d;%d;%dm▀" % (top + bottom)
+        lines.append(line + RESET)
+    return lines
+
+
+def wallpaper_image(path, w, h, look):
+    """The wallpaper cropped to `w` x `h`, its corners rounded as the look's
+    are, see-through outside them."""
+    try:
+        from PIL import Image, ImageDraw, ImageOps
+        image = ImageOps.fit(Image.open(path).convert("RGB"), (w, h), Image.LANCZOS).convert("RGBA")
+    except Exception:
+        return None
+    radius = {"metro": 0, "glass": 0.11, "solid": 0.09, "pixel": 0.22}[look] * min(w, h)
+    if radius:
+        mask = Image.new("L", (w * 2, h * 2), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, w * 2 - 1, h * 2 - 1), radius=radius * 2, fill=255)
+        image.putalpha(mask.resize((w, h), Image.LANCZOS))
+    return image
+
+
+def inline_image(image, cols, rows, keep_shape):
+    """An escape that shows `image` in line over `cols` x `rows` cells, for
+    terminals that show pictures (Konsole, iTerm2, WezTerm). With
+    `keep_shape` the terminal fits it in without stretching it."""
+    import base64
+    import io
+    buffer = io.BytesIO()
+    image.save(buffer, "PNG")
+    data = base64.b64encode(buffer.getvalue()).decode()
+    return "\033]1337;File=inline=1;width=%d;height=%d;preserveAspectRatio=%d:%s\007" % (
+        cols, rows, 1 if keep_shape else 0, data)
+
+
+def shows_images():
+    version = os.environ.get("KONSOLE_VERSION", "")
+    if version.isdigit() and int(version) >= 220400:
+        return True
+    return os.environ.get("TERM_PROGRAM", "") in ("iTerm.app", "WezTerm")
+
+
+def cell_size():
+    """A character cell's width and height in pixels, when the terminal says
+    (Konsole does), else None."""
+    try:
+        import fcntl
+        import struct
+        import termios
+        rows, cols, xp, yp = struct.unpack("HHHH", fcntl.ioctl(sys.stdout.fileno(), termios.TIOCGWINSZ, b"\0" * 8))
+        if rows and cols and xp and yp:
+            # Konsole's count includes a few spare pixels round the text (451
+            # for 23 lines of 19), so whole pixels, rounded down, are a cell.
+            return xp // cols, yp // rows
+    except (ImportError, OSError, ValueError):
+        pass
+    return None
+
+
+def beside_picture(beside, look, s, cell, images):
+    """What goes left of the facts: (cells wide, rows, an inline image
+    escape or None, block lines or None)."""
+    P = s["palette"]
+    wallpaper = P.get("wallpaper") or ""
+    if beside == "wallpaper" and not os.path.exists(wallpaper):
+        return None
+    cw, ch = cell or (10, 21.5)
+    if beside == "logo":
+        rows = 15
+        cols = max(10, round(rows * ch / cw))            # as wide as tall
+        try:
+            import distro_logo
+        except ImportError:
+            return None
+        if images:
+            # In real pixels when the terminal says how big a cell is; else a
+            # square the terminal fits in, so the circle stays round.
+            # Exactly that: Konsole resizes a picture of any other size
+            # without smoothing, and its edges came out jagged.
+            w, h = (cols * cw, rows * ch) if cell else (rows * 24, rows * 24)
+            picture = distro_logo.logo(look, s, w, h, wallpaper or None)
+            return cols, rows, inline_image(picture, cols, rows, keep_shape=not cell), None
+        picture = distro_logo.logo(look, s, cols * 4, rows * 8, wallpaper or None)
+        return cols, rows, None, blocks(picture, cols, rows, s["bg"])
+    rows, cols = 16, 34
+    if images:
+        picture = wallpaper_image(wallpaper, cols * 20, rows * 40, look)
+        return (cols, rows, inline_image(picture, cols, rows, keep_shape=False), None) if picture else None
+    picture = wallpaper_image(wallpaper, cols * 4, rows * 8, look)
+    return (cols, rows, None, blocks(picture, cols, rows, s["bg"])) if picture else None
+
+
+# ------------------------------------------------------------------ the looks
+
+def bar(fraction, cells, look, s, on_colour=None):
+    fraction = max(0.0, min(1.0, fraction))
+    filled = round(fraction * cells)
+    if look == "metro":
+        # Filled cells rather than "█": with Konsole drawing block characters
+        # from the font, those showed a gap between every two.
+        ink = on_colour or (1, 1, 1)
+        return bg(ink) + " " * filled + bg(T.toward(ink, s["tile"], 0.72)) + " " * (cells - filled) + bg(s["tile"])
+    dim = T.toward(s["fg"], s["panel"], 0.78)
+    if look == "pixel":
+        return fg(s["accent"]) + "━" * filled + fg(dim) + "━" * (cells - filled)
+    return fg(s["accent"]) + "━" * filled + fg(dim) + "─" * (cells - filled)
+
+
+def usage_rows():
+    out = []
+    for label, got in (("Memory", memory()), ("Disk", disk("/"))):
+        if got:
+            used, total = got
+            out.append((label, used / total if total else 0, "%s / %s GiB" % (gib(used), gib(total))))
+    return out
+
+
+def palette_strip(look):
+    if look == "metro":
+        return "".join("\033[4%dm  " % i for i in range(8)) + RESET + " " + \
+               "".join("\033[10%dm  " % i for i in range(8)) + RESET
+    return " ".join("\033[3%dm●" % i for i in range(1, 7)) + "  " + \
+           " ".join("\033[9%dm●" % i for i in range(1, 7)) + RESET
+
+
+def framed(look, s, title, rows, usage, room):
+    """Glass, solid and pixel: one panel of label and value lines."""
+    label_w = max([width(k) for k, _ in rows] + [width(k) for k, _, _ in usage]) + 2
+    value_w = max(12, min(room - label_w - 4, max([width(v) for _, v in rows] + [24])))
+    inner = label_w + value_w
+    panel, ink, accent = s["panel"], s["fg"], s["accent"]
+    label_ink = accent if look != "solid" else T.toward(ink, panel, 0.35)
+    body = []
+    for k, v in rows:
+        body.append(fg(label_ink) + pad(k, label_w) + fg(ink) + pad(fit(v, value_w), value_w))
+    for k, frac, text in usage:
+        cells = max(6, value_w - width(text) - 1)
+        body.append(fg(label_ink) + pad(k, label_w) + bar(frac, cells, look, s) + " " + fg(ink) + pad(text, value_w - cells - 1))
+    head = BOLD + fg(accent) + pad(fit(title, inner), inner) + RESET
+    lines = []
+    if look == "glass":
+        edge = fg(T.toward(ink, s["bg"], 0.72))
+        lines.append(edge + "╭" + "─" * (inner + 2) + "╮" + RESET)
+        lines.append(edge + "│" + bg(panel) + " " + head + bg(panel) + " " + RESET + edge + "│" + RESET)
+        lines.append(edge + "├" + "─" * (inner + 2) + "┤" + RESET)
+        for line in body:
+            lines.append(edge + "│" + bg(panel) + " " + line + " " + RESET + edge + "│" + RESET)
+        lines.append(edge + "╰" + "─" * (inner + 2) + "╯" + RESET)
+    else:
+        # A filled panel, its corners rounded with quarter blocks.
+        top = fg(panel) + "▗" + "▄" * (inner + 2) + "▖" + RESET
+        bottom = fg(panel) + "▝" + "▀" * (inner + 2) + "▘" + RESET
+        if look == "pixel":
+            # The name on a chip of the primary container, rounded like the
+            # panel (the font's half circles are too small to round a line).
+            pill, chip = s["pill"], width(title) + 2
+            lines.append(fg(pill) + "▗" + "▄" * chip + "▖" + RESET)
+            lines.append(bg(pill) + " " + BOLD + fg(s["on_pill"]) + " " + title + " " + RESET + bg(pill) + " " + RESET)
+            lines.append(fg(pill) + "▝" + "▀" * chip + "▘" + RESET)
+            lines.append(top)
+        else:
+            lines.append(top)
+            lines.append(bg(panel) + "  " + head + bg(panel) + "  " + RESET)
+            lines.append(bg(panel) + " " * (inner + 4) + RESET)
+        for line in body:
+            lines.append(bg(panel) + "  " + line + bg(panel) + "  " + RESET)
+        lines.append(bottom)
+    lines.append("")
+    lines.append("  " + palette_strip(look))
+    return lines
+
+
+def tiles(s, title, rows, usage, room):
+    """Metro: four square tiles in Metro's four colours, white on them, each
+    with its caption at the foot, as Mirage's tiles have."""
+    P = s["palette"]
+    groups = [("SYSTEM", [r for r in rows if r[0] in ("OS", "Host", "Kernel", "Packages")]),
+              ("HARDWARE", [r for r in rows if r[0] in ("CPU", "GPU", "", "Screen")]),
+              ("IN USE", []),
+              ("SESSION", [r for r in rows if r[0] in ("Uptime", "Shell", "Desktop", "Terminal")])]
+    colours = [P["metro1"], P["metro2"], P["metro3"], P["metro4"]]
+    tile_w = max(28, min(58, (room - 1) // 2))
+    inner = tile_w - 4
+    label_w = 10
+
+    def tile(caption, colour, lines):
+        white, faint = (1, 1, 1), T.toward((1, 1, 1), colour, 0.35)
+        out = [bg(colour) + " " * tile_w + RESET]
+        for line in lines:
+            out.append(bg(colour) + "  " + line + bg(colour) + " " * max(0, tile_w - 2 - width(line)) + RESET)
+        out.append(bg(colour) + " " * tile_w + RESET)
+        out.append(bg(colour) + "  " + fg(faint) + pad(caption, tile_w - 2) + RESET)
+        return out
+
+    def fact_lines(group, colour):
+        white, faint = (1, 1, 1), T.toward((1, 1, 1), colour, 0.35)
+        return [fg(faint) + pad(k, label_w) + fg(white) + fit(v, inner - label_w) for k, v in group]
+
+    built = []
+    for (caption, group), colour in zip(groups, colours):
+        if caption == "IN USE":
+            lines = []
+            s["tile"] = colour
+            for k, frac, text in usage:
+                lines.append(fg(T.toward((1, 1, 1), colour, 0.35)) + pad(k, label_w) + fg((1, 1, 1)) + text)
+                lines.append(bar(frac, inner, "metro", s))
+            built.append(tile(caption, colour, lines))
+        else:
+            built.append(tile(caption, colour, fact_lines(group, colour)))
+    # Two rows of two, a column apart; each row as tall as its taller tile.
+    out = [BOLD + fg(s["fg"]) + title + RESET, ""]
+    for left, right in ((built[0], built[1]), (built[2], built[3])):
+        height = max(len(left), len(right))
+        for t in (left, right):
+            colour_line = t[0]
+            while len(t) < height:
+                t.insert(len(t) - 1, colour_line)
+        for a, b in zip(left, right):
+            out.append(a + " " + b)
+        out.append("")
+    out.append(palette_strip("metro"))
+    return out
+
+
+def colours(look):
+    """The terminal's colours for `look`, with the panels' colours added."""
+    s = T.scheme(look)
+    P = s["palette"]
+    dark = M.luminance(s["bg"]) < 0.2
+    L, C, h = M.oklch(s["bg"])
+    s["panel"] = T.lch(max(0, min(1, L + (0.05 if dark else -0.05))), C, h)
+    if look == "pixel":
+        s["panel"] = P.get("px_secondary_c", s["panel"])
+        s["pill"] = P.get("px_primary_c", s["panel"])
+        s["on_pill"] = P.get("px_on", s["fg"])
+        s["accent"] = P.get("px_primary", s["accent"])
+    return s
+
+
+def compose(look, cols, lines_free, tty=True, images=False, cell=None, beside="logo", known=None):
+    """Everything mirafetch prints, as one string, for a terminal `cols`
+    wide with `lines_free` lines. `known` is the facts, when already found."""
+    s = colours(look)
+    P = s["palette"]
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or "you"
+    title = "%s@%s" % (user, os.uname().nodename.split(".")[0])
+    rows = list(known) if known is not None else facts()
+    rows.append(("Look", "%s, %s" % (T.LOOK_NAMES[look], wallpaper_name(P.get("wallpaper", ""))) if P.get("wallpaper")
+                 else T.LOOK_NAMES[look]))
+    usage = usage_rows()
+    pic = beside_picture(beside, look, s, cell, images) if tty and beside in ("logo", "wallpaper") else None
+    room = cols - (pic[0] + 3 if pic else 1)
+    if pic and room < 52:
+        pic, room = None, cols - 1
+    rows_out = tiles(s, title, rows, usage, room) if look == "metro" else framed(look, s, title, rows, usage, room)
+    if not tty:
+        return "".join(re.sub(r"\033\[[0-9;]*m", "", line) + "\n" for line in rows_out)
+    out = ["\n"]
+    pic_cols, pic_rows, image, block_lines = pic or (0, 0, None, None)
+    # Level with the panel, or with the tiles under Metro's name.
+    top = (2 if look == "metro" else 1) if pic and len(rows_out) >= pic_rows + 2 else 0
+    height = max(len(rows_out), pic_rows + top)
+    if image and top + pic_rows >= lines_free:
+        # A window too short for the picture: drawn with the text instead.
+        pic = beside_picture(beside, look, s, cell, False)
+        pic_cols, pic_rows, image, block_lines = pic or (0, 0, None, None)
+    if image:
+        # The picture first. Make room under the cursor for it (new lines,
+        # scrolling the screen if they have to, then back up), so laying it
+        # in scrolls nothing; then back to where it started. The text after
+        # may scroll the screen, and the picture goes up with it.
+        room = top + pic_rows
+        out.append("\n" * room + "\033[%dA" % room)
+        out.append("\0337" + ("\033[%dB" % top if top else "") + "\033[2G" + image + "\0338")
+    for i in range(height):
+        left = ""
+        if block_lines:
+            j = i - top
+            left = " " + (block_lines[j] if 0 <= j < len(block_lines) else " " * pic_cols) + "  "
+        elif image:
+            left = "\033[%dC" % (pic_cols + 3)          # past the picture, without writing over it
+        out.append(left + (rows_out[i] if i < len(rows_out) else "") + RESET + "\n")
+    out.append("\n")
+    return "".join(out)
+
+
+def main():
+    args = sys.argv[1:]
+    if "-h" in args or "--help" in args:
+        print(__doc__.strip())
+        return 0
+    if "--look" in args:
+        i = args.index("--look")
+        if i + 1 < len(args) and args[i + 1] in T.LOOKS:
+            os.environ["MIRAGE_TERMINAL_LOOK"] = args[i + 1]
+        else:
+            print("--look takes glass, solid, metro or pixel.")
+            return 1
+    beside = T.beside if T.beside in ("logo", "wallpaper", "none") else "logo"
+    if "--beside" in args:
+        i = args.index("--beside")
+        if i + 1 < len(args) and args[i + 1] in ("logo", "wallpaper", "none"):
+            beside = args[i + 1]
+        else:
+            print("--beside takes logo, wallpaper or none.")
+            return 1
+    if "--no-picture" in args:
+        beside = "none"
+    size = shutil.get_terminal_size((100, 30))
+    tty = sys.stdout.isatty()
+    sys.stdout.write(compose(T.current_look(), size.columns, size.lines, tty=tty, images=tty and shows_images(),
+                             cell=cell_size() if tty else None, beside=beside))
+    sys.stdout.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

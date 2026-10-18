@@ -1046,6 +1046,7 @@ def theme_step(args, cache, state):
         return False
 
     started = time.time()
+    failed = False
     if wallpaper is None or "unsupported" in wallpaper:
         why = "wallpaper plugin %s is not supported" % wallpaper["unsupported"] if wallpaper \
             else "could not find the wallpaper; set `wallpaper` in mirage.lua"
@@ -1056,10 +1057,19 @@ def theme_step(args, cache, state):
         except ImportError:
             theme = tint_only_theme("Pillow is not installed (pip install pillow)", args.mode)
         except (OSError, ValueError) as error:
+            import traceback
+            log(cache, "theme: render failed:\n" + traceback.format_exc().rstrip())
             theme = tint_only_theme("could not read the wallpaper: %s" % error, args.mode)
+            failed = True
     theme["window"] = window
     write_theme(cache, theme)
-    state["theme_signature"] = signature
+    # A render that failed is not remembered as done: with the signature kept,
+    # every later run found nothing to do, and the plain panes stayed (seen
+    # once in ConkyTray, after one failed run, until the wallpaper changed).
+    if failed:
+        state.pop("theme_signature", None)
+    else:
+        state["theme_signature"] = signature
     log(cache, "theme: %s (%s) in %.2fs, %s glass, accent %s" % (
         theme.get("wallpaper") or "-", theme.get("source", ""), time.time() - started,
         theme["mode"], "#%02x%02x%02x" % tuple(int(c * 255) for c in theme["accent"])))

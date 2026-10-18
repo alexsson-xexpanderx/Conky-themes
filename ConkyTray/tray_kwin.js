@@ -36,9 +36,45 @@ function send(gone) {
              JSON.stringify({windows: windows, panels: panels}));
 }
 
+function onDesktop(w) {
+    if (w.onAllDesktops) return true;
+    var desktops = w.desktops || [];
+    for (var i = 0; i < desktops.length; i++) {
+        if (desktops[i] === workspace.currentDesktop) return true;
+    }
+    return false;
+}
+
+// Which edges of the screen a window reaches (a maximised one, all four). A
+// panel along an edge one reaches stops floating, as Plasma's does. Sent only
+// when it changes: during a drag the geometry changes every frame.
+var edgesSent = null;
+function sendEdges(gone) {
+    var reached = {};
+    workspace.windowList().forEach(function (w) {
+        if (w === gone || !w.normalWindow || w.minimized || isPanel(w) || !onDesktop(w)) return;
+        var a = workspace.clientArea(KWin.MaximizeArea, w), g = w.frameGeometry;
+        if (g.y + g.height >= a.y + a.height - 1) reached.bottom = true;
+        if (g.y <= a.y + 1) reached.top = true;
+        if (g.x <= a.x + 1) reached.left = true;
+        if (g.x + g.width >= a.x + a.width - 1) reached.right = true;
+    });
+    var text = Object.keys(reached).sort().join(",");
+    if (text === edgesSent) return;
+    edgesSent = text;
+    callDBus("org.conkytray", "/Tray", "org.conkytray.Tray", "Edges", text);
+}
+
 function watch(w) {
-    w.captionChanged.connect(function () { send(); });
-    w.minimizedChanged.connect(function () { send(); });
+    // A title can change many times a second (a progress bar, a game's frame
+    // rate); it sends just that title, not the whole list.
+    w.captionChanged.connect(function () {
+        callDBus("org.conkytray", "/Tray", "org.conkytray.Tray", "Caption",
+                 w.internalId.toString(), w.caption);
+    });
+    w.minimizedChanged.connect(function () { send(); sendEdges(); });
+    w.frameGeometryChanged.connect(function () { sendEdges(); });
+    if (w.desktopsChanged) w.desktopsChanged.connect(function () { sendEdges(); });
     w.demandsAttentionChanged.connect(function () { send(); });
     if (w.desktopFileNameChanged) w.desktopFileNameChanged.connect(function () { send(); });
     if (isPanel(w)) w.frameGeometryChanged.connect(function () { send(); });
@@ -46,7 +82,9 @@ function watch(w) {
 
 workspace.windowList().forEach(watch);
 workspace.stackingOrder.forEach(function (w) { if (isPanel(w)) watch(w); });
-workspace.windowAdded.connect(function (w) { watch(w); send(); });
-workspace.windowRemoved.connect(function (w) { send(w); });
+workspace.windowAdded.connect(function (w) { watch(w); send(); sendEdges(); });
+workspace.windowRemoved.connect(function (w) { send(w); sendEdges(w); });
 workspace.windowActivated.connect(function () { send(); });
+workspace.currentDesktopChanged.connect(function () { sendEdges(); });
 send();
+sendEdges();

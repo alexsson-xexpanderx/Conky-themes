@@ -2,6 +2,10 @@
 
 [![Conky Mirage](Conky-Mirage/screenshot.png)](Conky-Mirage)
 
+<b>Mirage-Terminal (Konsole and a system summary in Mirage's looks)</b>
+
+[![Mirage-Terminal](Mirage-Terminal/previews/mirafetch-glass.png)](Mirage-Terminal)
+
 <b>conky-drawer-interactive (https://github.com/xexpanderx/conky-drawer-interactive)</b>
 
 ![alt tag](https://raw.githubusercontent.com/xexpanderx/conky-drawer-interactive/master/screenshot.png)

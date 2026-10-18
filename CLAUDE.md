@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-A collection of six independent Conky desktop-widget themes. There is no build system, package
+A collection of six independent Conky desktop-widget themes, plus terminal styling that follows them. There is no build system, package
 manager, test suite, or linter — each theme is a Conky config plus a Lua script that draws with
 cairo, installed by copying files into `~/.conky/`.
 
@@ -20,10 +20,16 @@ cairo, installed by copying files into `~/.conky/`.
   wallpaper, renders the glass and fetches Open-Meteo weather (no API key). Runs in place, like
   the orrery, and like it has a tkinter editor with a live preview (`mirage_settings.py`, for
   sizes and placement). `wallpapers/` holds twelve wallpapers drawn for its four looks.
-- `ConkyTray/` — a panel replacing Plasma's bottom panel (launcher button, pinned and open apps,
+- `ConkyTray/` — a panel replacing Plasma's bottom panel (app menu, pinned and open apps, now playing,
   tray icons, volume, network, battery, clock) in Mirage's four looks. Lua paints; a long-running
   Python helper (`tray.py`) talks to KWin, the tray protocol and Mirage's helper. Runs in place.
   Not "independent" in one respect: its looks come from `../Conky-Mirage/mirage.py`.
+
+- `Mirage-Terminal/` — the terminal in the same looks: `mirage_konsole.py` (a Konsole profile and
+  colour scheme that follow the look and wallpaper), `mirafetch` (a neofetch-like summary with the
+  system's logo drawn per look, `distro_logo.py`) and a settings window (`terminal_settings.py`,
+  previewing through `terminal_preview.py`), all on `terminal_palette.py`. Depends on
+  Conky-Mirage for the palette, its colour maths and the settings window's controls.
 
 The top-level `README.md` also advertises two themes that live in *other* repositories
 (`conky-drawer-interactive`, `conky-pywal`) — they are not in this tree.
@@ -501,6 +507,9 @@ passed too, so Python renders glass for exactly the layout Lua computed.
   tinted panes rather than show the wrong picture.
 - **The theme signature includes `mirage.py`'s own mtime**, so editing the helper re-renders the
   glass on the next run; `VERSION` only needs bumping for changes that do not touch the file.
+  A render that fails (an `OSError`/`ValueError` in `render_theme`) is not recorded as done:
+  `theme_step` drops the signature and logs the traceback to `mirage.log`, so the next run tries
+  again instead of keeping the plain panes.
 - **Glass is darkened by multiplying, not by mixing towards a tint.** Mixing towards grey flattened
   Saturn's golds and pinks to mud; multiplying keeps hue and saturation. Each tile is solved for
   7:1 (6:1 on light glass) against its 94th-percentile pixel, not the mean, then pulled 35% towards
@@ -787,8 +796,8 @@ xdotool here.
 
 `ConkyTray/` is a panel at the bottom edge: `start_conky_tray` (the window), `tray.lua` (draws,
 takes the mouse), `tray.py` (a long-running helper), `tray_kwin.js` (a KWin script the helper
-loads), `tray_menu.py` (popup menus), `tray_preview.lua` (renders the panel to a PNG) and
-`tray_settings.py` (the settings window). It was
+loads), `tray_menu.py` (popup menus), `tray_launcher.py` (the app menu), `tray_preview.lua`
+(renders the panel to a PNG) and `tray_settings.py` (the settings window). It was
 built in one go at the user's request ("build something first that works, then we go from
 there"); expect it to change.
 
@@ -798,8 +807,8 @@ there"); expect it to change.
   `output_backend = 'wayland'` the same config becomes a layer-shell surface with an exclusive
   zone and the work area shrinks. With Plasma's panel still at the bottom, the two zones stack
   and ConkyTray sits just above it (measured at y 1312 of 1440).
-- **Two sizes.** On Wayland `conky_window.width/height` are logical (2991x56 on 3440 wide at
-  scale 1.15) while `conky_surface()` is an image surface of real pixels (3440x65) carrying a
+- **Two sizes.** On Wayland `conky_window.width/height` are logical (2992x57 on 3440 wide at
+  scale 1.15) while `conky_surface()` is an image surface of real pixels (3441x66) carrying a
   device scale. `tray.lua` undoes the scale (`cairo_scale(1/ds)`) and lays out in real pixels so
   icons land 1:1. Mouse event coordinates are logical; multiply by `ds`. The window is as wide as
   the screen in logical units, which the config gets from `tray.py screen` (`kscreen-doctor -j`).
@@ -809,9 +818,15 @@ there"); expect it to change.
   window whose class starts with "conky". The helper picks its own panel by conky's pid (Lua reads
   it from `/proc/self/stat` and writes it to `layout`): a Wayland client cannot learn its own
   position, and the glass needs it. KWin scripts cannot be called from outside, so each action
-  (activate, minimise, close) is a one-off script loaded, run and unloaded. Two traps:
-  `org.kde.kwin.Scripting.loadScript` is overloaded, so dbus-python needs `signature="ss"`, and the
-  loaded script's object is `/Scripting/Script<id>`.
+  (activate, minimise, close) is a one-off script loaded, started and unloaded 1.5s later. Two
+  traps: `org.kde.kwin.Scripting.loadScript` is overloaded, so dbus-python needs `signature="ss"`;
+  and a script must be started with `Scripting.start()` (runs every loaded script not yet
+  running), never through `/Scripting/Script<id>`. KWin gives a script the number of scripts
+  loaded as its id, so once an older one is unloaded a new one can get the id of one still
+  loaded; `run()` on that path then goes to the old, finished script and the new one never runs
+  (reproduced in the nested KWin: A=1, B=2, unload A, C=2). The user saw it as clicks that did
+  nothing until the third or fourth: a decision log showed three minimises in a row sent and
+  never carried out, while the clicks themselves arrived within 100ms.
 - **Matching windows to apps.** A window gives `desktopFileName`, `resourceClass` and
   `resourceName`; .desktop files give their id, `StartupWMClass` and `Exec`. All candidates are
   collected and a pinned app wins, then one without `NoDisplay`. Found on this machine: Zen's
@@ -825,12 +840,26 @@ there"); expect it to change.
   network, Bluetooth, clipboard, notifications) are plasmoids, not items, and vanish with the
   panel: volume (`pactl subscribe` + `wpctl`), network (`nmcli monitor`) and battery (`/sys`) are
   drawn by ConkyTray itself; the rest is not done yet.
+- **A tray icon's left click** calls the item's `Activate`. Plasma first hands the app an
+  activation token (`ProvideXdgActivationToken`), which lets it bring its window forward; a
+  panel that is not Plasma cannot get one (KWin grants tokens to the active window's client or
+  to privileged ones), and Qt without a token asks for nothing at all when its window was
+  never typed into. The user's WhatsApp (ZapZap, a flatpak) opened only from the apps' row.
+  So when none of the app's windows is in front at the click, `raise_for_tray` waits 250ms for
+  the app to answer and then activates its latest window through KWin, re-checking each window
+  list for 2.5s (a hidden window takes a moment to map). Not when one is in front: then
+  `Activate` usually hides it. The app's windows are found by the D-Bus connection's pid, the
+  item's `Id`, or a flatpak's app id from `/proc/<pid>/root/.flatpak-info`. Checked in the
+  nested KWin with a stand-in app behaving like ZapZap: behind, minimised, in front, hidden.
 - **Menus** are `tray_menu.py`, a GTK 3 layer-shell surface per menu, because a Wayland popup must
   belong to a surface of the same client and the panel's is conky's. KWin gives an on-demand
   layer surface the keyboard when it maps (tested), so focus-out means a click elsewhere and
   closes it. Tray menus are read from the app's `com.canonical.dbusmenu` and the click is sent
   back as `Event(id, "clicked", ...)`. Pin `Gdk` 3.0 before importing, or PyGObject loads Gdk 4
-  and Gtk 3 then refuses to import.
+  and Gtk 3 then refuses to import. A layer-shell popup takes its *minimum* size, and an
+  ellipsizing label's minimum is "…", so every label showed as "…" (the user's first right-click
+  menu); `fit_label` gives each label a minimum of its own length (`width_chars`), shortening only
+  past 50 characters.
 - **Icons** are looked up in the user's theme (`kdeglobals` `[Icons] Theme`, here Tela, then its
   `Inherits`, hicolor, pixmaps), rendered to PNGs of the exact pixel size with `rsvg-convert`
   into `~/.cache/conky-tray/icons/`. KDE symbolic SVGs use `.ColorScheme-Text { color: ... }`
@@ -839,7 +868,8 @@ there"); expect it to change.
 - **The look** is Mirage's: `style = "mirage"` makes the helper read `style`, `corner_radius`,
   `blur_radius` and `glass_tint` out of `../Conky-Mirage/mirage.lua` when its mtime changes, and
   the palette and glass come from running `mirage.py theme --at <panel> --window WxH --tiles
-  <panes>` into `~/.cache/conky-tray/theme/`. Glass and solid are one pane end to end; Metro and
+  0,0,W,H --radius 0` (the whole window, see "Floating and attached") into
+  `~/.cache/conky-tray/theme/`. Glass and solid are one pane end to end; Metro and
   Pixel are four blocks (launcher, apps, tray, clock) in the order Mirage colours its boxes
   (Metro 1-4; Pixel primary, surface, secondary, tertiary), as the folded strip does.
 - **Files between them** (in `~/.cache/conky-tray`): Lua writes `layout` (key=value: pid, size,
@@ -858,6 +888,36 @@ there"); expect it to change.
   `tray_preview.lua` with the settings as overrides and shows the panel's two ends stacked at
   real size (its middle is empty). The overrides go through `gsub`, whose replacement string
   treats `%` as special: a date format like `%a %d %b` has to be escaped to `%%`.
+  Save reads both files fresh and changes only the settings changed in the window. It used to
+  write back the copy it read when it opened, which undid a code fix made to `tray.lua` while
+  the user had the window open (seen: `tray.lua.bak` three seconds after the fix). Mirage's and
+  the orrery's editors still write their opening copy, so anything changed by hand while they
+  are open is lost on save.
+- **The app menu's button wears a colour of its own** in every look: of the colours its look
+  offers (Metro: metro1, 3, 4, not the apps block's metro2; Pixel: px_primary, px_tertiary_c,
+  px_secondary_c; glass and solid: accent, accent2), the helper picks the one furthest in
+  OKLab from the mean of the wallpaper behind the button (`theme/under.png` at
+  `launcher_rect`) and sends it as `state.launcher.color`. The user found Metro's button
+  "transparent": metro1 came out pink on a pink wallpaper. The logo is the one-colour
+  `start-here-kde-plasma-symbolic` (Plasma's own), drawn white or near-black by the tile's
+  lightness (`launcher_ink` in `layout`).
+- **When the panel draws nothing.** Draw errors no longer only reach conky's stderr (often a
+  terminal nobody watches): `conky_tray` runs the frame under `pcall` and writes each distinct
+  error with a traceback to `~/.cache/conky-tray/errors.log`. And `touch
+  ~/.cache/conky-tray/dump` makes the panel write what it drew to `dump.png` on its next frame,
+  the one way to see the live buffer from here. Found that way: the panel went blank (KWin had
+  it mapped and opaque, the space kept) because `local frame_now` was declared below
+  `draw_panel`, which therefore read a global of that name, nil; the press highlight does
+  arithmetic on it, so every frame failed from the first click until the next script reload
+  reset `pressed`. A Lua local is only in scope below its declaration: a shared per-frame
+  variable goes above everything that reads it. Check with `luac -l -l -p tray.lua | grep -oE
+  '(GET|SET)TABUP.*_ENV "[^"]+"'`: the only globals should be the settings, the libraries,
+  cairo's and conky's names and the `tray_preview*` ones. (Spectacle can screenshot the nested
+  KWin from its own D-Bus session, for checking what a test panel shows.)
+- **No shadow under the bar.** Mirage's `shadow.png` is drawn for a widget with 28px of room
+  around its boxes; the panel has 7, so the shadow ended in a straight-edged dark band at the
+  window's edge (the user saw it). The panel does not paint it; glass and solid keep their 1px
+  edge line, and outside the bar the panel is fully transparent (checked on the raw surface).
 - **Starting apps.** `kstart --application` takes the desktop file's name *without* ".desktop"
   (`org.kde.dolphin`). Given `org.kde.dolphin.desktop` it prints "No such service" and then hangs
   instead of exiting, so the first version started nothing and left a stuck kstart per click (the
@@ -869,11 +929,322 @@ there"); expect it to change.
   own variables; when restarting the panel from such a shell, take the environment from
   `/proc/<plasmashell pid>/environ`, which is the desktop session's. The working folder is
   passed on too: conky runs in the ConkyTray folder and a terminal opened from the panel
-  started there, so the helper `chdir`s to the home folder first.
+  started there, so the helper `chdir`s to the home folder first (and sets `PWD`, which it
+  would otherwise pass on still naming the ConkyTray folder).
+- **Starting at login.** The user's autostart entry is `~/.config/autostart/conky-tray.desktop`,
+  beside Mirage's `conky-mirage.desktop`. conky's `--pause` comes after the config is read, too
+  late for `start_conky_tray`, which asks `tray.py screen` for the panel's length while it is
+  read; so `screen` asks kscreen again for up to 20s instead, rather than make a 1920px panel
+  for a guessed screen while kscreen is still starting.
+- **The app menu** (`tray_launcher.py`) is Kickoff's layout in the panel's look: favourites,
+  All Applications, categories (the freedesktop main categories plus the submenus programs
+  install under `menus/applications-merged`, read from their `<Include>`s and `.directory`
+  files), search, Places and the session buttons. Reading ~750 desktop files and building the
+  grid takes about a second, so tray.py keeps it running hidden and talks JSON lines to it on
+  stdin; it answers with actions on stdout, which tray.py carries out (so launched apps never
+  inherit the menu's pipes). Favourites start from Kickoff's: the links are in
+  `~/.local/share/kactivitymanagerd/resources/database` (`ResourceLink`, agent
+  `org.kde.plasma.favorites.applications`) and the order in `kactivitymanagerd-statsrc`
+  (`Favorites-...instance-<kickoff applet id>-global`); a favourite is shown even when its file
+  is `NoDisplay`, as Kickoff does (the user's Zen favourite is KDE's hidden `userapp-` file).
+  One FlowBox holds every app; sections and search only filter and sort it, and its sort func
+  is called for hidden children too. Glass is Mirage's: tray.py renders the menu's own pane
+  (`~/.cache/conky-tray/launcher/`) where it opens and the CSS paints it as the background.
+  A click on the panel's button that took the keyboard away (and so closed the menu) must not
+  reopen it: a toggle within 0.4s of a close is ignored.
+- **Layer-shell margins count from the edge of the usable area**, not the screen, when other
+  surfaces hold exclusive zones: with Plasma's panel and ConkyTray at the bottom, a bottom
+  margin computed from the screen put the menu 112px too high (measured). The menu and the
+  popups set `GtkLayerShell.set_exclusive_zone(self, -1)` to be placed from the screen edge.
+- **Clicks are not replayed.** A new helper starts reading `commands` at its end. The first
+  versions read it from the start, so every helper restart re-ran every click since the file
+  began (34 that day: starting and switching apps, opening menus).
+- **What it costs, measured** (`/proc/<pid>/stat` over 30s, 3440x65 panel): conky 0.4% of a
+  core at `update_interval = 0.2` (1.2% at 0.1), the helper 0.07%, the hidden menu 0%, the open
+  menu 1-4%. The user reported a core at 100%; it was not reproduced (not a hung kstart, not a
+  title flood: 195 title changes a second cost the old code 3%, not the menu, not the volume
+  watcher), so the hot paths were made cheap and both halves watch themselves: conky writes
+  `~/.cache/conky-tray/diag.log` when it uses over 10% of a core for 10s (with its frame count),
+  and the helper writes "busy:" to `daemon.log` with counts of what it did when it uses over 15%
+  for 30s. What changed: the KWin script sends a title change alone (`Caption`) instead of the
+  whole list, and window lists are coalesced over 50ms; the volume is re-read only for `on sink`
+  and `on server` events, not every app stream's; Mirage's helper is not re-run for identical
+  arguments within 120s; the Lua lays out again only when its inputs change (state, theme, look,
+  size, minute); `commands` and `layout` are watched with inotify, with slow polls as a fallback.
+  The helper reads its own inotify descriptor on the cache folder (`watch_cache`, ctypes), not
+  `Gio.FileMonitor`: GLib's inotify source stops listening for 100ms after any notice it was not
+  asked for, and the helper writes `state.lua`, `serial` and icons into the same folder, so a
+  click waited 50-100ms (measured on the user's clicks); now about 0.1ms. Every helper used to leave its `nmcli monitor` behind (ten had piled up):
+  the watchers, the menu and the popups now get `PR_SET_PDEATHSIG` and are terminated on exit.
+- **Any edge.** `local position` in `start_conky_tray` is bottom, top, left or right. conky
+  takes the edge it keeps from the alignment, so they map to `bottom_left`, `top_left`,
+  `middle_left` and `middle_right` (measured: `middle_left` and `middle_right` panels each kept
+  their edge, 64-65px; a `top_left` upright panel would keep the top). Upright, the window is
+  `height` wide and the screen's height tall (`tray.py screen` prints width, real width, scale,
+  height, real height). `tray.lua` lays everything out along the bar (`box(a, len)`): the app
+  menu's button first, the clock last, broken onto short lines when upright; the marks under
+  open apps sit on the side that faces the screen's edge and icons step away from them. It
+  reads the edge from `start_conky_tray` at load (`tray_preview_position` in a preview). A
+  click sends the box clicked (x, y, w, h in the panel's pixels) and `layout` carries `side`
+  and `launcher_rect`, so the helper turns them into KWin's coordinates and the menus place
+  themselves: a popup centred on the box just off the panel (re-placed on `size-allocate`,
+  since the width it asks for before layout was 190 for a 103px menu), the app menu with a
+  corner at the button's. Placements were measured in the nested KWin on all four edges.
+- **Bluetooth, brightness, keyboard layout and devices** sit in the tray block after the apps'
+  icons, in Plasma's order. Bluetooth is BlueZ on the system bus (`GetManagedObjects`, the
+  adapter's `Powered` set through Properties, `Device1.Connect`/`Disconnect` with a 40s timeout).
+  Brightness is Plasma's `org.kde.ScreenBrightness` (`DisplaysDBusNames`, each display's
+  `Brightness`/`MaxBrightness`, `SetBrightness(value, 0)`, which shows Plasma's own level
+  indicator); here it drives the LG monitor over DDC. The layout is `org.kde.keyboard /Layouts`
+  (`getLayout`, `getLayoutsList`, `setLayout`), drawn as its short name and only with two or
+  more layouts. Devices are UDisks2: filesystems whose drive is removable or on USB/SD and not
+  `HintSystem`; `Filesystem.Mount` then `xdg-open` to open one, every mounted part unmounted
+  then `Drive.PowerOff` (or `Eject`) to remove it. When one arrives, a *passive* menu opens by
+  its icon: `KeyboardMode.NONE`, so it takes nothing from what the user types in, gone after
+  10s, or 3s after the pointer leaves it. It waits for the panel to write `devices_rect`
+  (the icon has to be laid out first), or 2.5s. Each service's signals come in bursts, so
+  refreshes go through `soon()`.
+- **Children are watched through `Daemon.watch`**, never `GLib.child_watch_add` directly. GLib
+  reaps the child, so `watch` sets the `Popen`'s `returncode` and keeps the object until then.
+  A `Popen` dropped while its child still runs goes on subprocess's `_active` list and is
+  reaped by the next `Popen` or `subprocess.run`, after which GLib's `waitid` fails and logs
+  "No child processes" (seen twice per start, from the menu's glass run, whose callback did not
+  hold `proc`). For the same reason close a menu by `returncode`, not `poll()`, and with the
+  code set a reaped pid that may have been reused is never signalled.
+- **Now playing** (`show_media`) fills the room between the apps and the tray; the user asked for
+  "cool stuff, minimal and useful only" there and nothing Mirage shows. Players are MPRIS
+  (`org.mpris.MediaPlayer2.*`, found by `NameOwnerChanged`, followed by `PropertiesChanged` and
+  `Seeked`). The shown one is a player picked from its menu, else the last to start playing, else
+  the last paused within `PAUSED_FOR` (600s, so it can be resumed); one paused before the helper
+  started is not shown. MPRIS does not signal the position as it moves, so it is read on every
+  change and every 3s while playing, and both halves carry it forward on `/proc/uptime`
+  (`pos`, `at`, `rate` in the state); a reading within 1s of where the last one predicts is not
+  written, or the state would change every 3s. The progress line is drawn every frame over the
+  cached panel (`draw_progress`), along the edge the open-app marks use; no length (live
+  streams, and Zen at times) means no line. Titles are drawn by Pango in the helper
+  (`text_png`) and painted as PNGs, because cairo's toy text has no font fallback and titles
+  carry emoji and other scripts; the Lua fades a title's end with a linear mask rather than
+  cutting it. `media_fit` shrinks it in steps as apps fill the panel: two lines, the title
+  alone, the title cut (faded) down to 70 units, the play button alone, nothing; upright
+  panels get the button only. Covers: `file://` used directly, `http(s)://` fetched once by
+  `curl` (never blocking the helper), cropped square; old titles and covers are pruned from
+  `media/`. Three buttons follow the title (previous, play/pause, next; a skip the player does
+  not offer, `CanGoNext` false for a lone video, drawn faint and ignored), each its own hit
+  over the box's (`id` "show": the cover and title bring the player up). `hit_at` searches the
+  hits from the last so a button is found before the box under it; clicks on media carry the
+  id like tasks and tray icons. Shrinking ends in the three buttons alone, then play/pause
+  alone; upright panels stack the three. Names come from the player's desktop file, since Zen calls itself "Mozilla zen".
+  The player's window is brought forward through KWin by pid, as its own `Raise` needs the
+  activation token only Plasma gets. Scroll skips once per 0.6s (a touchpad sends bursts).
+- **The sound bars** (`show_visualizer`): 14 bars between the title and the buttons, dropped
+  first when room is short. The helper listens only while the bars are on screen (`visualizer=1`
+  in `layout`) and the shown player is playing: `parec --device=@DEFAULT_MONITOR@` at 24 kHz mono,
+  read non-blocking; every 40ms a 1024-point Hann-windowed FFT (numpy), bands spaced evenly in
+  pitch from 45 Hz to 11 kHz, each its loudest bin in dB plus 3 dB an octave above 100 Hz, on a
+  42 dB scale under a peak that follows the loudest band (instantly up, 3 dB/s down). The levels
+  go to `$XDG_RUNTIME_DIR/conky-tray-levels` (a RAM disk, and outside the cache folder the
+  helper watches), stamped with `/proc/uptime`; the Lua reads that file each frame, treats a
+  reading older than 0.6s as silence and eases each bar (35ms up, 140ms down). While they move,
+  `conky_set_update_interval(0.04)` (25 fps), back to 0.2 otherwise; conky reads the interval
+  every loop. Measured playing Spotify: conky 1.7% of a core, the helper 0.7%, parec 0.1%.
+  A new default output (`on server` from `pactl subscribe`) restarts the listening. The
+  microphone warning ignores it, as a monitor recording. Previews draw a still pattern.
+- **The microphone and camera warning** (`show_privacy`) replaces Plasma's tray indicators,
+  which went with Plasma's panel: the icon with a red dot ringed in the block's colour (a red
+  highlight on Metro's orange tray block did not read). Microphone: `pactl subscribe` already
+  runs for the volume, and its `source-output` events refresh `pactl -f json list
+  source-outputs`, minus corked streams, recordings of a sink's monitor, level meters
+  (pavucontrol, kmix, Plasma) and "Peak detect" streams. Camera: inotify on each `/dev/video*`
+  (`IN_OPEN`/`IN_CLOSE_*`, plus `/dev` for new cameras); 1.2s after an event the holders are
+  found by reading `/proc/*/fd` links (apps open a camera for a moment to query it); when
+  PipeWire holds it for a portal client, `pw-dump`'s running `Stream/Input/Video` nodes give the
+  app. Screen sharing needs nothing: xdg-desktop-portal-kde shows its own tray item (a
+  KStatusNotifierItem) while sharing. Both were tested with made-up `pactl` output and a held
+  file standing in for the camera, not by recording the user.
+- **Previewing with a made-up state**: `TRAY_CACHE=<dir> lua tray_preview.lua out.png` renders
+  from `<dir>/state.lua`, but only once `<dir>/serial` exists, since the Lua loads the state
+  when the serial changes; without it the panel renders empty.
+- **Floating and attached**, as Plasma's panel: the bar floats with `m` (6 units) of window
+  round it, and when a window reaches the panel's screen edge (maximised, or just moved
+  against it) it is attached: the user did not want the see-through border with a window
+  maximised. `tray_kwin.js` works out which edges of the work area (`clientArea(MaximizeArea)`)
+  some normal, unminimised window on the current desktop reaches, and calls `Edges("bottom,...")`
+  only when that set changes (geometry changes every frame of a drag); `state.attached` is
+  whether the panel's side is in it. Attached, only backgrounds change, so nothing on the panel
+  moves: glass and solid become one square pane over the whole window; Metro and Pixel blocks
+  close up and reach the edge, the apps' block (a filler in its colour if apps are off) running
+  over the empty middle to the tray, with what is playing drawn on it rather than in its own
+  block; every corner is square. Glass is now always cut for the whole window with radius 0
+  (`L.glass_key`) and clipped to the floating bar in Lua, which strokes the bar's own hairline,
+  so switching needs no new glass. Checked in the nested KWin: middle, maximised, minimised,
+  restored, moved against the bottom. Preview it with `attached=yes`. Single screen only: a
+  window on another output reaching its own bottom edge would attach the panel too.
+- **The window overhangs the screen's edge by one unit** (`overhang` in `start_conky_tray`,
+  `OVERHANG` in `tray.lua`; keep them equal). At 115% the screen is 1252.17 units tall and KWin
+  puts a layer surface on whole units, so a 56-unit panel ended at 1252 and the last row of
+  pixels was a fifth uncovered: the user saw a thin line of wallpaper along the bottom of the
+  attached panel. Now the window is `height + 1` units and a margin of -1 (`gap_y`, or `gap_x`
+  upright) puts that unit past the edge (KWin allows negative margins; measured: 1196 to 1253).
+  conky reserves `height + gap`, 56, and KWin takes the margin off again, so the work area ends
+  at 1197 and maximised windows reach one unit under the panel, which also leaves no seam
+  between them. `tray.lua` lays out the on-screen part only (`compute_layout(cr, W, H, win)`
+  with `win.ox/oy`, the drawn part's offset in the window: non-zero for top and left panels),
+  drawing translated; attached backgrounds and the glass cover the whole window. Mouse
+  positions are moved into the drawn part and click boxes, `launcher_rect` and
+  `devices_rect` back into the window's pixels, which the helper places menus from. Along
+  the edge, `tray.py screen` rounds the screen's size up (2992 for 2991.3) for the same
+  reason; KWin centres the panel at x -0.5. Previews draw no overhang. So the panel's x can be
+  -1: Mirage's helper gets `--at=-1,1375`, since `--at -1,1375` reads as an option to argparse
+  and every theme refresh failed until that was found.
+- **Colours of the user's own** (`glass_color`, `glass_transparency`, `solid_color`,
+  `metro_<block>` and `pixel_<block>` for launcher, apps, media, tray and clock; "auto" or
+  `#rrggbb`). Each look keeps its own set. `chosen_color` reads them through `_G`;
+  `block_colors` gives a chosen block its colour with ink and accent from `ink_on` (white or
+  near-black), and glass the tint laid over the frosted pane at `GLASS_TINT` (0.62), the ink
+  judged against that mix. `glass_transparency` paints the glass and tint at `1 - t`. Menus
+  follow (`menu_bg` from the block's colour). Attached, what is playing wears the apps' block
+  (`L.media_block`), since it sits on it. Glass and solid have no launcher colour: the
+  helper's pick stays.
+  The helper renders one-colour pictures in the panel's ink, which is stale the moment a colour
+  changes and wrong in any preview with other colours, so the panel uses them as stencils
+  (`paint_mask`: `cairo_mask_surface` filled with the block's ink): the tray's own symbols, the
+  media titles (`draw_text_png`), the launcher's logo when `state.launcher.symbolic`, and app
+  tray icons the helper finds to be one plain grey shade (`one_colour`: Claude's and
+  Telegram's are white and vanished on a light block). Coloured icons are painted as they are.
+  The settings window's Colours box shows the swatches of the look picked (for "Like Mirage",
+  Mirage's look from the state), each filled with the colour in use: a chosen one, or the
+  "auto" one read from the panel's `theme/theme.lua` and `state.lua` (`panel_palette`,
+  `AUTO_FROM`); Reload reads them again. The picker is the orrery editor's saturation/value
+  square and hue strip, copied smaller rather than imported, so ConkyTray does not depend on
+  Conky_Orrery; it now lives in `mirage_settings.py` (`ColourPicker`, `Swatch`, `ink_on`,
+  unused there) so Mirage-Terminal's settings window shares it. `glass_transparency` is a number setting (`NUMBERS`, written `%.2f`, comment
+  kept in its column; the colour lines have room for a code after "auto").
+- **Two traps found on the way.** A comment added at the end of a line in `request_theme`
+  swallowed the `--window` argument after it, Mirage's helper drew a 0x0 shadow and every
+  palette failed ("cannot write empty image") until it was read in the log. And Mirage's helper
+  remembered a failed render as done (its `theme_signature`), so the plain panes stayed until
+  the wallpaper changed; it now forgets a failed one and logs its traceback.
+- **Every part can be switched off** (`show_launcher`, `show_tasks`, `show_media`, `show_tray`,
+  `show_privacy`, `show_clock`, with `show_volume`, `show_network`, `show_battery` and `show_date`), each a switch in the
+  settings window's "Shown" box. A hidden part takes no block and no room; without the button,
+  `layout` carries an empty `launcher_rect` and the helper places no app menu and cuts no glass
+  for one.
+- **Testing layer-shell surfaces safely**: a nested, invisible KWin with its own bus,
+  `dbus-run-session -- kwin_wayland --virtual --no-lockscreen --width 1600 --height 1000 --socket
+  conkytray-test`, then `WAYLAND_DISPLAY=conkytray-test`. Read the bus address from the
+  `kwin_wayland` process's environ, not dbus-run-session's (which is the real session's, and a
+  test helper there meets the real one and exits). The menu also has `TRAY_LAUNCHER_PLAIN=1`, an
+  ordinary window, for screenshots on Xvfb.
 - **Testing.** A test panel on the real display reserves real space, so keep such runs short.
   `tray_preview.lua` renders from a cache's `state.lua` with the same device-scaled surface conky
   gives; it never writes `layout`, which would point the running helper at the preview's pid.
   The first mouse events (not moves) go to `~/.cache/conky-tray/mouse.log`.
+
+### Mirage-Terminal: Konsole and mirafetch in the looks
+
+`terminal_palette.py` is shared: `current_look()` (by `follow`: "panel" is ConkyTray's `style`,
+or Mirage's when that is "mirage"; `MIRAGE_TERMINAL_LOOK` overrides, for tests and `--look`),
+`palette()` (parsed out of the newer of `~/.cache/conky-mirage/theme.lua` and the panel's, else a dark
+fallback; the first occurrence of each key, since nested tables repeat names), `chosen()` (the
+colours picked in ConkyTray's settings) and `scheme()`. It imports `mirage.py` for its OKLab
+helpers (`oklch`, `oklch_to_rgb`, `contrast`, `harmonize`), so terminal colours are worked out
+the way the widgets' are. Backgrounds: glass the tint; solid `solid`; Metro `metro2` deepened
+to OKLab L 0.34 (at its own 0.45-0.52 every readable colour came out pastel and bright red
+looked like bright green); Pixel `px_surface`; a chosen colour as it is: the terminal's own
+`<look>_background` first, else ConkyTray's for that look. `<look>_see_through` (glass 0.20,
+the rest 0) becomes the scheme's `Opacity`, `blur` its `Blur` when anything shows through, and
+`colour_strength` multiplies the looks' chroma. The settings are module globals in its USER
+CONFIGURATION, read when used, so the settings window previews by setting them on the module. The sixteen colours keep their hues (red 25 degrees and so on, turned up to
+14 degrees towards the accent) at the lightness nearest the background that gives 4.6:1, bright
+7.5:1 (on a mid-tone chosen background, stronger rather than lighter).
+
+`mirage_konsole.py` writes `Mirage.profile` (the old default profile's sections with
+`ColorScheme=Mirage`, the cursor in the text colour, `TerminalMargin` from `margin`, which
+`apply` also brings up to date; Konsole reads it for new windows only), `Mirage.colorscheme` and
+`Mirage-Switch.colorscheme`, and sets `DefaultProfile` in `konsolerc` (backup
+`konsolerc.before-mirage`, the old name in `.mirage-previous-default` for `uninstall`).
+Recolouring open tabs, all found the hard way on Konsole 26.08 in a nested KWin with
+screenshots:
+- `Session.setProfile` over D-Bus is refused ("Security sensitive DBus API is disabled in the
+  settings") unless the user turns that on. `profile()` and `processId()` are allowed.
+- Konsole's own way works: `ESC ] 50 ; ColorScheme=<name> BEL` written to the tab's terminal
+  device (`/proc/<shell>/fd/0`), as `konsoleprofile` does. Sent the name it already has, nothing
+  happens; another name, Konsole reads that file afresh (even one created after it started).
+  Sending the other name and back in one write did nothing, as the change is applied a moment
+  later and the last one wins. So each update moves a tab to whichever of the two names it is
+  not on, both files holding the new colours.
+- After such a change Konsole reports the tab's profile as "" (a nameless copy), so tabs once
+  recoloured are remembered in `~/.cache/mirage-terminal/konsole-tabs` by Konsole's service and
+  tab number (never reused while that Konsole runs), with the name each is on. Tabs on other
+  profiles are left alone.
+- Translucency could not be seen in the nested KWin (even a 50% test scheme came out opaque);
+  the user's own Retrograde scheme uses `Opacity` and `Blur` on the real desktop.
+ConkyTray's helper calls `mirage_konsole.py apply --quiet` (`check_terminal`, in its 3s poll)
+when the mtime of `tray.lua`, `mirage.lua`, `terminal_palette.py`, Mirage's `theme.lua` or the
+panel's `theme.lua` changes; `apply` does nothing unless the profile is installed and the
+colours or the margin differ.
+
+`mirafetch` gathers its facts in about 0.12s (subprocesses for the shell's version, `plasmashell
+--version`, `lspci -mm` and `xrandr` in a thread pool; the rest from /proc, /sys and os-release;
+packages from `/var/lib/pkgtools/packages`). Each look has its own drawing: glass a box-drawn
+frame round a faintly lighter pane, solid a filled panel rounded with quarter blocks (▗▄▖ ▝▀▘),
+Metro four `metro1-4` tiles with captions and bars drawn as filled cells (Konsole drawing "█"
+from the font left a gap between each two; the user's profile has `UseFontLineChararacters`),
+Pixel tonal containers with the name on a primary-container chip (the font's ◖◗ are too small
+to round a line). Beside the facts (`beside`: logo, wallpaper, none) goes a picture, an iTerm2
+inline image (`ESC ] 1337 ; File=inline=1; width=..;height=..`) when the terminal shows them
+(Konsole 22.04+, `KONSOLE_VERSION`). The picture goes down first: newlines and a cursor-up make
+room under the cursor (scrolling the screen if they must), the cursor is saved, the image laid
+in, the cursor restored, and each text line then steps past the picture with `CSI n C` rather
+than spaces, so nothing is written over it. Text that runs past the bottom scrolls the picture
+up with it (checked in Konsole at 23 and 18 lines, screen already full). It used to be the
+other way round, text first and then back up to lay the picture in, which only works when the
+whole output fits in the window; the user's Konsole is 98x23, two lines short of the old rule,
+and got the half-block fallback, which they reported as pixelated and jagged. Now only the
+picture has to fit (its 15 rows plus the rows above it). Elsewhere it is half blocks ("▀", two
+pixels a cell). Piped, it prints plain text. `compose()` builds the whole output as a
+string, which is what the settings window's preview reads back.
+
+The logo (`distro_logo.py`, Pillow, drawn 3x and scaled down) is Slackware's, after the public
+domain SVG on Wikimedia Commons: an S high in a disc and a line under it that turns up at its
+left end, black on a glossy blue disc there. Per look: Glass a disc of the wallpaper blurred and
+mixed towards the tint, a sheen on its upper half, a rim, the mark in the text colour with an
+accent glow (the original's glow); Solid a flat disc a step off the background with a shadow,
+the mark in the accent; Metro a square tile in whichever of `metro1-4` is nearest Slackware's
+blue in hue, the mark white, the system's name as its caption (left out in blocks, where it is
+noise); Pixel a plain disc in `px_primary_c`, the mark in `px_primary` with round ends
+(Android's wavy 9-bump "cookie" shape was tried first; the user did not like it). Other systems get their name's first letter in the same treatment. It is 15 rows and as
+many cells wide as makes it square: Konsole fills in the pty's pixel size (`TIOCGWINSZ`
+`ws_xpixel`/`ws_ypixel`; 1749x906 for 174x47 cells in the nested KWin, so it includes the
+spare pixels: 983x451 for 98x23 cells of 10x19 on the user's screen), so a cell is the whole
+pixels rounded down, and the picture is made at exactly the cell box's size. Konsole resizes a
+picture of any other size without smoothing: made from `xp / cols` (19.6 tall) and again at
+twice the size, the user saw jagged edges both times. It also enlarges every picture by the
+desktop's scaling (115% here) without smoothing, whatever size or units it is sent in (four
+ways compared with `QT_SCALE_FACTOR=1.15` in the nested KWin, all alike), so the finished logo
+is blurred by 0.45px, premultiplied (`RGBa`) so the rim takes no dark fringe; that hid the steps; without that it is a square sent with `preserveAspectRatio=1`, so the disc stays round.
+Under Metro it starts two rows down, level with the tiles, whose two rows are exactly 15 tall.
+
+`terminal_settings.py` is the third window built on `mirage_settings.py`'s controls, laid out
+preview left, settings right. Same rules as the others: nothing written before Save, the file
+read fresh at Save and only changed settings touched, `.bak`. Its preview is
+`terminal_preview.py`: mirafetch's real `compose()` output (with the facts found once, the
+terminal named as Konsole) fed through a small terminal (`Screen`: SGR colours, bold as the
+intense colours, faint, `CUU`/`CHA`, `ESC 7/8`, the inline picture) and drawn with Pillow in
+the profile's font at 0.82 of its size, so 128 columns fit; block and box characters are drawn
+as shapes. Only the default background is see-through, as in Konsole. The terminal sits in a
+window over the wallpaper, blurred behind it when `blur` is on. The settings are module
+globals of `terminal_palette`, so the one render thread sets them under `LOCK` and the window
+asks for the looks "Panel"/"Mirage" stand for and each look's Auto background up front
+(`_read_world`, again on Reload and Save) rather than touching the module while a render runs.
+Save then runs `mirage_konsole.py` as a child (install, uninstall or apply), which reads the
+file afresh. "Show it when a terminal opens" adds a marked block to `~/.bashrc` (or `.zshrc`)
+that runs mirafetch by its full path when output is a terminal, and removes that block or a bare
+`mirafetch` line it finds; the first change backs the file up to `.before-mirafetch`. Tested
+end to end on a copy of the folder with a test home, `XDG_*` dirs and the nested KWin's bus, so
+the real Konsole and `.bashrc` were never touched (on Save the child recolours every open tab
+on the bus it finds). Previews in `Mirage-Terminal/previews/` are screenshots from the nested
+KWin; `settings.png` is from Xvfb, with `resolution` patched since Xvfb reports its own size.
 
 ### Cairo operators carry meaning
 

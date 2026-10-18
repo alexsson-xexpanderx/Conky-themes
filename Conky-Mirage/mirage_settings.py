@@ -23,6 +23,7 @@ colour editor, the controls are drawn on Tk canvases rather than taken from
 ttk, whose themes cannot be pushed far from their Motif ancestry.
 """
 
+import colorsys
 import os
 import queue
 import re
@@ -691,6 +692,116 @@ class Switch(tk.Canvas):
         x = self.W - h / 2 if self.value else h / 2
         r = h / 2 - 4
         self.create_oval(x - r, h / 2 - r, x + r, h / 2 + r, fill=knob, outline=knob)
+
+
+def ink_on(colour):
+    r, g, b = (int(colour[i:i + 2], 16) for i in (1, 3, 5))
+    return "#111318" if (r * 299 + g * 587 + b * 114) / 1000 > 150 else "#FFFFFF"
+
+
+class ColourPicker(tk.Frame):
+    """A saturation/value square over a hue strip, after the orrery's colour
+    editor (Conky_Orrery/orrery_colors.py), smaller. The square is a
+    PhotoImage filled a pixel at a time, rebuilt only when the hue moves.
+    Not used here: ConkyTray's and Mirage-Terminal's settings windows take it."""
+
+    SQ = 136
+    STRIP = 12
+
+    def __init__(self, parent, command):
+        super().__init__(parent, bg=SURFACE)
+        self.command = command
+        self.h, self.s, self.v = 0.6, 0.5, 0.5
+        self.square = tk.Canvas(self, width=self.SQ, height=self.SQ, bg=SURFACE, highlightthickness=1,
+                                highlightbackground=BORDER, cursor="crosshair")
+        self.square.grid(row=0, column=0, sticky="w")
+        self.square.bind("<Button-1>", self._square_at)
+        self.square.bind("<B1-Motion>", self._square_at)
+        self.strip = tk.Canvas(self, width=self.SQ, height=self.STRIP, bg=SURFACE, highlightthickness=1,
+                               highlightbackground=BORDER, cursor="sb_h_double_arrow")
+        self.strip.grid(row=1, column=0, sticky="w", pady=(8, 0))
+        self.strip.bind("<Button-1>", self._strip_at)
+        self.strip.bind("<B1-Motion>", self._strip_at)
+        self._image = tk.PhotoImage(width=self.SQ, height=self.SQ)
+        self.square.create_image(0, 0, image=self._image, anchor="nw")
+        for x in range(self.SQ):
+            r, g, b = colorsys.hsv_to_rgb(x / (self.SQ - 1), 1.0, 1.0)
+            self.strip.create_line(x, 0, x, self.STRIP, fill="#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255)))
+        self._rebuild()
+
+    def _rebuild(self):
+        size, rows = self.SQ, []
+        for y in range(size):
+            value = 1.0 - y / (size - 1)
+            row = []
+            for x in range(size):
+                r, g, b = colorsys.hsv_to_rgb(self.h, x / (size - 1), value)
+                row.append("#%02x%02x%02x" % (int(r * 255), int(g * 255), int(b * 255)))
+            rows.append("{" + " ".join(row) + "}")
+        self._image.put(" ".join(rows))
+        self._cursors()
+
+    def _cursors(self):
+        self.square.delete("cursor")
+        x, y = self.s * (self.SQ - 1), (1.0 - self.v) * (self.SQ - 1)
+        ink = "#000000" if self.v > 0.6 and self.s < 0.6 else "#FFFFFF"
+        self.square.create_oval(x - 6, y - 6, x + 6, y + 6, outline=ink, width=2, tags="cursor")
+        self.strip.delete("cursor")
+        hx = self.h * (self.SQ - 1)
+        self.strip.create_rectangle(hx - 2, 0, hx + 2, self.STRIP, outline="#FFFFFF", width=2, tags="cursor")
+
+    def _square_at(self, event):
+        self.s = max(0.0, min(1.0, event.x / (self.SQ - 1)))
+        self.v = max(0.0, min(1.0, 1.0 - event.y / (self.SQ - 1)))
+        self._cursors()
+        self.command(self.hex())
+
+    def _strip_at(self, event):
+        self.h = max(0.0, min(1.0, event.x / (self.SQ - 1)))
+        self._rebuild()
+        self.command(self.hex())
+
+    def hex(self):
+        r, g, b = colorsys.hsv_to_rgb(self.h, self.s, self.v)
+        return "#%02x%02x%02x" % (int(r * 255 + 0.5), int(g * 255 + 0.5), int(b * 255 + 0.5))
+
+    def set_hex(self, value):
+        r, g, b = (int(value[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        h, s, v = colorsys.rgb_to_hsv(r, g, b)
+        if s > 0.004:                  # a grey has no hue; leave the strip where it was
+            self.h = h
+        self.s, self.v = s, v
+        self._rebuild()
+
+
+class Swatch(tk.Canvas):
+    """One colour to choose: filled with it, "Auto" or its code written on it,
+    outlined when it is the one the picker is changing."""
+
+    W, H = 112, 30
+
+    def __init__(self, parent, command):
+        super().__init__(parent, width=self.W, height=self.H, bg=SURFACE, highlightthickness=0, cursor="hand2")
+        self.colour, self.auto, self.selected, self.hover = "#808080", True, False, False
+        self.bind("<Button-1>", lambda e: command())
+        self.bind("<Enter>", lambda e: self._hover(True))
+        self.bind("<Leave>", lambda e: self._hover(False))
+
+    def _hover(self, on):
+        self.hover = on
+        self._draw()
+
+    def show(self, colour, auto, selected):
+        self.colour, self.auto, self.selected = colour, auto, selected
+        self._draw()
+
+    def _draw(self):
+        self.delete("all")
+        outline = ACCENT if self.selected else (BORDER_LIT if self.hover else BORDER)
+        rounded(self, 2, 2, self.W - 2, self.H - 2, 7, fill=self.colour, outline=outline,
+                   width=2 if self.selected else 1)
+        self.create_text(self.W / 2, self.H / 2, text="Auto" if self.auto else self.colour.upper(),
+                         fill=ink_on(self.colour), font=F_SMALL)
 
 
 class PositionPicker(tk.Canvas):

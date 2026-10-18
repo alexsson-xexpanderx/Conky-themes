@@ -1,7 +1,7 @@
 --[[ ==========================================================================
   Render tray.lua to a PNG, without conky.
 
-    lua tray_preview.lua <out.png> [size=WxH] [scale=S] [setting=value ...]
+    lua tray_preview.lua <out.png> [size=WxH] [scale=S] [position=P] [attached=yes] [setting=value ...]
 
   Draws the panel from what the running panel's helper last wrote (its
   apps, tray icons and so on), with any setting from tray.lua's USER
@@ -10,8 +10,9 @@
   preview's own, and the panel is laid over the wallpaper behind it.
 
   size is the panel in real pixels and scale the desktop's (3440x65 at 1.15
-  on a 3440x1440 screen at 115%); like conky's, the surface carries the
-  scale. The last line printed is "size WxH".
+  on a 3440x1440 screen at 115%, 65x1440 standing on the left); like
+  conky's, the surface carries the scale. position is the edge it goes
+  along, as in start_conky_tray. The last line printed is "size WxH".
 ============================================================================ ]]
 
 for _, dir in ipairs({"/usr/lib64/conky", "/usr/lib/conky", "/usr/lib/x86_64-linux-gnu/conky"}) do
@@ -30,6 +31,10 @@ for i = 2, #arg do
     W, H = tonumber(w) or W, tonumber(h) or H
   elseif key == "scale" then
     SCALE = tonumber(value) or SCALE
+  elseif key == "position" then
+    tray_preview_position = value           -- the edge, which start_conky_tray holds
+  elseif key == "attached" then
+    tray_preview_attached = value == "yes"  -- as with a window maximised
   elseif key then
     overrides[key] = value
   end
@@ -74,27 +79,30 @@ conky_tray()
 local mirage = HERE .. "/../Conky-Mirage/mirage.py"
 local L = tray_preview_layout
 if L and io.open(mirage, "r") then
-  local x, y = 0, nil
+  -- Where the running panel is, if it is on the same edge; otherwise
+  -- where one on that edge would be.
+  local x, y = nil, nil
   local loaded = loadfile(tray_cache_dir .. "/state.lua", "t", {})
   local ok, state = false, nil
   if loaded then ok, state = pcall(loaded) end
-  if ok and type(state) == "table" and state.panel then
+  if ok and type(state) == "table" and state.panel and state.panel.side == L.side then
     x = state.panel.x
-    y = state.panel.y + (state.panel.h or H) - H
+    y = L.side == "bottom" and state.panel.y + (state.panel.h or H) - H or state.panel.y
   end
   if not y then
-    local mon_h = tonumber(command("xrandr --listmonitors"):match("%d+/%d+x(%d+)/")) or 1080
-    y = mon_h - H
+    local listing = command("xrandr --listmonitors")
+    local mon_w, mon_h = listing:match("(%d+)/%d+x(%d+)/")
+    mon_w, mon_h = tonumber(mon_w) or 1920, tonumber(mon_h) or 1080
+    x = L.side == "right" and mon_w - W or 0
+    y = L.side == "bottom" and mon_h - H or 0
   end
   local tiles = {}
-  if L.look == "glass" or L.look == "solid" then
-    for _, p in ipairs(L.panes) do tiles[#tiles + 1] = p.key end
-  end
+  if L.look == "glass" or L.look == "solid" then tiles[1] = L.glass_key end
   os.execute("mkdir -p " .. shell_quote(PREVIEW))
-  os.execute(string.format("python3 %s theme --cache %s --at %d,%d --window %dx%d --tiles %s " ..
+  os.execute(string.format("python3 %s theme --cache %s --at=%d,%d --window %dx%d --tiles %s " ..
                            "--radius %.2f --scale %.4f --blur %.1f --tint 0.260 >/dev/null 2>&1",
                            shell_quote(mirage), shell_quote(PREVIEW), x, y, W, H, shell_quote(table.concat(tiles, ";")),
-                           math.min(L.radius, L.bh / 2), L.u, 34 * L.u))
+                           0, L.u, 34 * L.u))
   tray_preview_theme = {dir = PREVIEW, id = 0, stamp = os.time() .. "." .. os.clock()}
 end
 

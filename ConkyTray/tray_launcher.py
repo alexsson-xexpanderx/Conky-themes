@@ -12,8 +12,8 @@ Reading every app and building the grid takes about a second, so tray.py
 keeps this running, hidden, and it only shows itself. tray.py sends one
 JSON object per line on stdin:
 
-    {"cmd": "toggle", "left": .., "above": .., "look": .., "palette": {..},
-     "glass": "<png or null>", "pins": [..]}
+    {"cmd": "toggle", "side": .., "rect": [x, y, w, h], "look": ..,
+     "palette": {..}, "glass": "<png or null>", "pins": [..]}
     {"cmd": "hide"}
 
 and this answers one line per action on stdout, for tray.py to carry out:
@@ -71,6 +71,11 @@ FAVORITES_FILE = os.path.join(tray.CONFIG, "favorites")
 
 def out(line):
     print(line, flush=True)
+
+
+def note(text):
+    sys.stderr.write("%s %s\n" % (time.strftime("%H:%M:%S"), text))
+    sys.stderr.flush()
 
 
 # ------------------------------------------------------------------ data
@@ -720,8 +725,7 @@ class Launcher(Gtk.Window):
 
     def command(self, spec):
         what = spec.get("cmd")
-        sys.stderr.write("%s %s (shown: %s)\n" % (time.strftime("%H:%M:%S"), what, self.get_visible()))
-        sys.stderr.flush()
+        note("%s (shown: %s)" % (what, self.get_visible()))
         if what == "hide":
             self.close()
         elif what == "toggle":
@@ -740,35 +744,63 @@ class Launcher(Gtk.Window):
         self.pins = list(spec.get("pins") or [])
         self.provider.load_from_data(look_css(spec.get("look", "glass"), spec.get("palette") or {},
                                               spec.get("glass")).encode())
-        display = Gdk.Display.get_default()
-        monitor = display.get_primary_monitor() or display.get_monitor(0)
-        geometry = monitor.get_geometry()
-        left = int(spec.get("left") or 6)
-        above = spec.get("above")
-        bottom = int(geometry.height - above + 6) if above is not None else 70
         if self.layered:
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, max(0, left))
-            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, max(0, bottom))
+            self.place(spec)
         self.section, self.query = spec.get("section", "favorites"), ""
         self.search.set_text("")
         self.hide_context()
         self.refresh()
         self.had_focus, self.shown_at = False, time.monotonic()
+        note("opening")
         self.show_all()
         self.context.hide()
         self.present()
         self.search.grab_focus()
 
+    def place(self, spec):
+        """By the panel's app menu button, off the panel: a corner of the menu
+        at the button's, on the panel's inner side."""
+        display = Gdk.Display.get_default()
+        monitor = display.get_primary_monitor() or display.get_monitor(0)
+        screen = monitor.get_geometry()
+        side = spec.get("side", "bottom")
+        x, y, w, h = spec.get("rect") or (6, screen.height - 60, 44, 44)
+        edges = GtkLayerShell.Edge
+        for edge in (edges.TOP, edges.BOTTOM, edges.LEFT, edges.RIGHT):
+            GtkLayerShell.set_anchor(self, edge, False)
+            GtkLayerShell.set_margin(self, edge, 0)
+        vertical_edge = edges.BOTTOM if side == "bottom" else edges.TOP
+        horizontal_edge = edges.RIGHT if side == "right" else edges.LEFT
+        GtkLayerShell.set_anchor(self, vertical_edge, True)
+        GtkLayerShell.set_anchor(self, horizontal_edge, True)
+        if side == "bottom":
+            left, bottom = x, screen.height - y + 6
+            GtkLayerShell.set_margin(self, edges.LEFT, max(0, int(min(left, screen.width - WIDTH))))
+            GtkLayerShell.set_margin(self, edges.BOTTOM, max(0, int(bottom)))
+        elif side == "top":
+            GtkLayerShell.set_margin(self, edges.LEFT, max(0, int(min(x, screen.width - WIDTH))))
+            GtkLayerShell.set_margin(self, edges.TOP, max(0, int(y + h + 6)))
+        elif side == "left":
+            GtkLayerShell.set_margin(self, edges.LEFT, max(0, int(x + w + 6)))
+            GtkLayerShell.set_margin(self, edges.TOP, max(0, int(min(y, screen.height - HEIGHT))))
+        else:
+            GtkLayerShell.set_margin(self, edges.RIGHT, max(0, int(screen.width - x + 6)))
+            GtkLayerShell.set_margin(self, edges.TOP, max(0, int(min(y, screen.height - HEIGHT))))
+        note("placed by the %s panel's button at %d,%d" % (side, x, y))
+
     def close(self):
+        note("closing (shown: %s)" % self.get_visible())
         if self.get_visible():
             self.hide()
             self.hidden_at = time.monotonic()
 
     def focus_in(self, *unused):
+        note("keyboard in")
         self.had_focus = True
         return False
 
     def focus_out(self, *unused):
+        note("keyboard out")
         if self.layered and self.had_focus and time.monotonic() - self.shown_at > 0.15:
             self.close()
         return False

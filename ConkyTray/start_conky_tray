@@ -4,9 +4,20 @@
   Start it with:  conky -c /path/to/ConkyTray/start_conky_tray
 ]]
 
--- How tall the panel is, in your screen's units: the bar is four fifths of
--- it, with a little room above and below.
+-- Which edge of the screen it goes along: "bottom", "top", "left" or
+-- "right". On the left or right it stands upright.
+local position = "bottom"
+
+-- How thick the panel is, in your screen's units (its height, or its width
+-- when it stands upright): the bar is four fifths of it, with a little room
+-- either side.
 local height = 56
+
+-- How far past the screen's edge the window reaches, in the same units. With
+-- a desktop scale like 115% the screen is not a whole number of units tall
+-- and a panel ending exactly at it left a line of wallpaper showing. tray.lua
+-- draws the panel inside the rest (its OVERHANG must say the same).
+local overhang = 1
 
 ---------------------------------------------------------------------------
 
@@ -20,9 +31,18 @@ end
 
 local here = debug.getinfo(1, "S").source:match("^@(.*)/[^/]*$") or "."
 
--- As wide as the screen. Wayland places windows in units of the screen's
--- pixels over its scale, so the helper works that out.
-local width = tonumber(command("python3 '" .. here .. "/tray.py' screen"):match("%d+")) or 1920
+-- As long as the screen's edge. Wayland places windows in units of the
+-- screen's pixels over its scale, so the helper works that out.
+local screen = {}
+for n in command("python3 '" .. here .. "/tray.py' screen"):gmatch("[%d.]+") do screen[#screen + 1] = tonumber(n) end
+local screen_w, screen_h = screen[1] or 1920, screen[4] or 1080
+local upright = position == "left" or position == "right"
+local width = upright and height + overhang or screen_w
+local length = upright and screen_h or height + overhang
+-- The panel keeps the space along its edge for itself; conky takes the edge
+-- from the alignment (middle_left keeps the left edge, and so on).
+local alignment = ({bottom = 'bottom_left', top = 'top_left', left = 'middle_left',
+                    right = 'middle_right'})[position] or 'bottom_left'
 
 local major, minor = command("conky --version"):match("conky (%d+)%.(%d+)")
 local version = (tonumber(major) or 1) * 100 + (tonumber(minor) or 25)
@@ -32,7 +52,9 @@ conky.config = {
     -- shell's exclusive zone). Through XWayland, KWin ignores the request.
     output_backend = 'wayland',
 
-    update_interval = 0.1,
+    -- Five times a second: the clock, hover and clicks need no more, and
+    -- every redraw costs conky the whole panel.
+    update_interval = 0.2,
     double_buffer = true,
     no_buffers = true,
     override_utf8_locale = true,
@@ -48,11 +70,14 @@ conky.config = {
 
     minimum_width = width,
     maximum_width = width,
-    minimum_height = height,
+    minimum_height = length,
 
-    alignment = 'bottom_left',
-    gap_x = 0,
-    gap_y = 0,
+    alignment = alignment,
+    -- The overhang: a negative margin puts that much of the window past the
+    -- edge. KWin takes the margin off the space it keeps for the panel too,
+    -- so windows reach just under the panel and no seam shows between them.
+    gap_x = upright and -overhang or 0,
+    gap_y = upright and 0 or -overhang,
 
     draw_shades = false,
     draw_outline = false,

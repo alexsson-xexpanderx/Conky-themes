@@ -9,10 +9,10 @@ placed over the panel (GTK 3 and gtk-layer-shell). It takes the keyboard
 when it opens, which KWin grants an on-demand layer surface, so a click
 anywhere else takes the keyboard away and closes it; Escape closes it too.
 
-The JSON says where (`x`, the centre in KWin's coordinates, and `above`,
-the top of the panel), the colours, and either `items` -- the chosen item's
-id is printed -- or `dbusmenu`, a tray icon's own menu, which is read from
-and answered to the app directly.
+The JSON says where (`side`, the panel's edge, and `rect`, the box that was
+clicked in KWin's coordinates), the colours, and either `items` -- the
+chosen item's id is printed -- or `dbusmenu`, a tray icon's own menu, which
+is read from and answered to the app directly.
 """
 
 import json
@@ -66,6 +66,16 @@ def dbusmenu_items(service, path):
     return root.get("children", []), menu
 
 
+def fit_label(label, text, longest=50):
+    """Room for the whole text, shortened with "…" only past `longest`
+    characters. A layer-shell popup takes its smallest size, and a label that
+    may be shortened has "…" for its smallest, so without a minimum width
+    every label showed as "…"."""
+    label.set_width_chars(min(len(text) + 2, longest))
+    label.set_max_width_chars(longest)
+    label.set_ellipsize(3)
+
+
 class Menu(Gtk.Window):
     def __init__(self, spec, items, on_choose):
         super().__init__()
@@ -78,9 +88,23 @@ class Menu(Gtk.Window):
         GtkLayerShell.init_for_window(self)
         GtkLayerShell.set_layer(self, GtkLayerShell.Layer.OVERLAY)
         GtkLayerShell.set_namespace(self, "conkytray-menu")
-        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.ON_DEMAND)
-        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.BOTTOM, True)
-        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.LEFT, True)
+        # A menu that opened by itself (a drive was plugged in) must not take
+        # the keyboard from whatever the user is typing in: it goes again
+        # after a while, unless the pointer is on it.
+        self.passive = bool(spec.get("passive"))
+        GtkLayerShell.set_keyboard_mode(self, GtkLayerShell.KeyboardMode.NONE if self.passive
+                                        else GtkLayerShell.KeyboardMode.ON_DEMAND)
+        self.leave_timer = None
+        if self.passive:
+            self.add_events(Gdk.EventMask.ENTER_NOTIFY_MASK | Gdk.EventMask.LEAVE_NOTIFY_MASK)
+            self.connect("enter-notify-event", self.pointer_in)
+            self.connect("leave-notify-event", self.pointer_out)
+            self.leave_timer = GLib.timeout_add_seconds(10, self.time_up)
+        # Anchored to the screen's corner nearest the panel, then moved in by
+        # margins to the box that was clicked.
+        side = spec.get("side", "bottom")
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.BOTTOM if side == "bottom" else GtkLayerShell.Edge.TOP, True)
+        GtkLayerShell.set_anchor(self, GtkLayerShell.Edge.RIGHT if side == "right" else GtkLayerShell.Edge.LEFT, True)
         # Placed from the screen's edge, not from the top of the panels' space.
         GtkLayerShell.set_exclusive_zone(self, -1)
         self.style(spec.get("colors") or {})
@@ -92,6 +116,10 @@ class Menu(Gtk.Window):
         self.connect("focus-out-event", self.focus_out)
         self.connect("key-press-event", self.key)
         self.connect("draw", self.clear)
+        # Measured again once GTK has laid it out, which can differ from what
+        # it asked for at first.
+        self.placed_size = None
+        self.connect("size-allocate", self.resized)
 
     @staticmethod
     def clear(widget, cr):
@@ -145,8 +173,7 @@ class Menu(Gtk.Window):
                 self.frame.pack_start(Gtk.Separator(), False, False, 0)
             elif item.get("header"):
                 label = Gtk.Label(label=item.get("label", ""), xalign=0)
-                label.set_max_width_chars(48)
-                label.set_ellipsize(3)
+                fit_label(label, item.get("label", ""))
                 label.get_style_context().add_class("header")
                 self.frame.pack_start(label, False, False, 0)
             elif "children" in item:
@@ -180,8 +207,7 @@ class Menu(Gtk.Window):
         if image:
             box.pack_start(image, False, False, 0)
         label = Gtk.Label(label=item.get("label", ""), xalign=0)
-        label.set_max_width_chars(60)
-        label.set_ellipsize(3)
+        fit_label(label, item.get("label", ""))
         box.pack_start(label, True, True, 0)
         if "children" in item:
             box.pack_end(Gtk.Label(label="›"), False, False, 0)
@@ -191,19 +217,56 @@ class Menu(Gtk.Window):
         return button
 
     def place(self):
-        """Centre the menu over the point it was opened from, kept on the
-        screen, its bottom just above the panel."""
+        """Put the menu just off the panel, centred on the box that was
+        clicked and kept on the screen: above a bottom panel, below a top
+        one, beside a left or right one."""
         display = Gdk.Display.get_default()
         monitor = display.get_primary_monitor() or display.get_monitor(0)
-        geometry = monitor.get_geometry()
+        screen = monitor.get_geometry()
+        # The size its text needs (the natural size). Shrinking the window to
+        # its smallest instead squeezed every label to its "…".
         width = self.get_preferred_width()[1]
-        x = float(self.spec.get("x") or geometry.width / 2)
-        left = int(min(max(x - width / 2, 4 - SHADOW), geometry.width - width + SHADOW - 4))
-        above = self.spec.get("above")
-        bottom = int(geometry.height - above + 6 - SHADOW) if above is not None else 64
-        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, max(0, left))
-        GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, max(0, bottom))
-        self.resize(1, 1)
+        height = self.get_preferred_height()[1]
+        side = self.spec.get("side", "bottom")
+        x, y, w, h = self.spec.get("rect") or (screen.width / 2, screen.height - 60, 1, 1)
+        gap = 6 - SHADOW                      # the shadow's room sits inside the window
+        if side in ("bottom", "top"):
+            left = min(max(x + w / 2 - width / 2, 4 - SHADOW), screen.width - width + SHADOW - 4)
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, max(0, int(left)))
+            if side == "bottom":
+                GtkLayerShell.set_margin(self, GtkLayerShell.Edge.BOTTOM, max(0, int(screen.height - y + gap)))
+            else:
+                GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, max(0, int(y + h + gap)))
+        else:
+            top = min(max(y + h / 2 - height / 2, 4 - SHADOW), screen.height - height + SHADOW - 4)
+            GtkLayerShell.set_margin(self, GtkLayerShell.Edge.TOP, max(0, int(top)))
+            if side == "left":
+                GtkLayerShell.set_margin(self, GtkLayerShell.Edge.LEFT, max(0, int(x + w + gap)))
+            else:
+                GtkLayerShell.set_margin(self, GtkLayerShell.Edge.RIGHT, max(0, int(screen.width - x + gap)))
+        self.resize(width, height)
+
+    def pointer_in(self, widget, event):
+        if event.detail != Gdk.NotifyType.INFERIOR and self.leave_timer:
+            GLib.source_remove(self.leave_timer)
+            self.leave_timer = None
+        return False
+
+    def pointer_out(self, widget, event):
+        if event.detail != Gdk.NotifyType.INFERIOR and not self.leave_timer:
+            self.leave_timer = GLib.timeout_add_seconds(3, self.time_up)
+        return False
+
+    def time_up(self):
+        self.leave_timer = None
+        self.finish()
+        return False
+
+    def resized(self, widget, allocation):
+        size = (allocation.width, allocation.height)
+        if size != self.placed_size and self.get_mapped():
+            self.placed_size = size
+            self.place()
 
     def choose(self, item):
         if self.done:
