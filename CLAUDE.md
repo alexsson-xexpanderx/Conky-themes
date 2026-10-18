@@ -601,7 +601,9 @@ rest of the file calls declared outside (`palette_for`, `moon_phase`, `sample_ne
 as more top-level locals.
 
 Small decisions the user made: the 7-day rain chance is shown for every day (a gap for a dry
-day read as missing data; below 20% it is fainter), the 24-hour chart has no highlighted
+day read as missing data; below 20% it is fainter) and named in the key, after High and Low, as
+"Rain probability" with the same drop (the drops read as humidity twice; the key shrinks to 9.5
+and then says just "Rain" before it gives the rain up where the tile is narrow), the 24-hour chart has no highlighted
 "now" dot (the "Now" label is enough) and no night shading (a darker band from sunset to
 sunrise, which the user read as rain and disliked), and the wind hub is 19 units across so the
 unit clears its edge.

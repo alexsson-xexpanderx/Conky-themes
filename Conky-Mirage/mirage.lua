@@ -1518,24 +1518,40 @@ TILES.week = {
 
     local warm, cool = P.sun, P.rain
 
-    -- The key: which line is which.
-    face(cr, font_regular, 11)
-    local key_low, key_high = "Low", "High"
-    local kw = advance(cr, key_low) + advance(cr, key_high) + 44
-    if kw <= w - 2 * PAD - cw - 10 then
-      local x = w - PAD
-      ink(cr, MUTED)
-      x = x - advance(cr, key_low)
-      text(cr, key_low, x, 30)
-      source(cr, cool, 1)
-      disc(cr, x - 9, 26, 3.4)
-      cairo_fill(cr)
-      x = x - 22 - advance(cr, key_high)
-      ink(cr, MUTED)
-      text(cr, key_high, x, 30)
-      source(cr, warm, 1)
-      disc(cr, x - 9, 26, 3.4)
-      cairo_fill(cr)
+    -- The key: which line is which, and what the drops under the days are
+    -- (they were read as humidity twice). Where it is short of room it gets
+    -- a little smaller first, then the rain's label shortens.
+    local keys = {{"High", warm}, {"Low", cool}, {"Rain probability", P.rain, true}}
+    local function key_width(size)
+      face(cr, font_regular, size)
+      local width = 13 * size / 11 * (#keys - 1)
+      for _, item in ipairs(keys) do width = width + 9 + advance(cr, item[1]) end
+      return width
+    end
+    local room, size = w - 2 * PAD - cw - 10, nil
+    for _, try in ipairs({{11, "Rain probability"}, {10, "Rain probability"}, {9.5, "Rain probability"},
+                          {10, "Rain"}}) do
+      keys[3][1] = try[2]
+      if key_width(try[1]) <= room then size = try[1] break end
+    end
+    if not size then
+      keys[3] = nil
+      if key_width(11) <= room then size = 11 end
+    end
+    if size then
+      local x = w - PAD - key_width(size) + 9
+      for _, item in ipairs(keys) do
+        ink(cr, MUTED)
+        local lw = text(cr, item[1], x, 30)
+        source(cr, item[2], 1)
+        if item[3] then
+          droplet(cr, x - 8, 26.5, 8)
+        else
+          disc(cr, x - 9, 26, 3.4)
+          cairo_fill(cr)
+        end
+        x = x + lw + 13 * size / 11 + 9
+      end
     end
 
     local n = #days
