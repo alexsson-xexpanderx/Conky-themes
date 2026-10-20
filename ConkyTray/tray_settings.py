@@ -80,7 +80,7 @@ HEX_RE = re.compile(r"^#[0-9a-fA-F]{6}$")
 DEFAULTS = {"style": "mirage", "clock_format": "24h", "show_date": True, "date_format": "%a %d %b",
             "show_launcher": True, "show_tasks": True, "show_media": True, "show_visualizer": True,
             "show_tray": True, "show_clock": True,
-            "show_privacy": True,
+            "show_privacy": True, "show_notifications": True,
             "show_devices": True, "show_keyboard": True, "show_bluetooth": True, "show_brightness": True,
             "show_volume": True, "show_network": True, "show_battery": True, "height": 56,
             "position": "bottom", "glass_transparency": 0.0}
@@ -88,7 +88,7 @@ DEFAULTS.update({key: "auto" for key in COLOURS})
 STRINGS = ("style", "clock_format", "date_format") + COLOURS
 NUMBERS = ("glass_transparency",)
 SWITCHES = ("show_date", "show_launcher", "show_tasks", "show_media", "show_visualizer", "show_tray", "show_clock",
-            "show_privacy",
+            "show_privacy", "show_notifications",
             "show_devices",
             "show_keyboard", "show_bluetooth", "show_brightness", "show_volume", "show_network", "show_battery")
 HEIGHT_RE = re.compile(r"^(local height = )(\d+)", re.M)
@@ -460,6 +460,8 @@ class Editor(tk.Tk):
                 ("show_tray", "Tray icons", "The small icons apps put in the tray."),
                 ("show_privacy", "Microphone and camera", "A red dot while an app uses your microphone or "
                                                           "camera. Click it to see which app."),
+                ("show_notifications", "Notifications", "A bell with the notifications you have had. Click it "
+                                                         "to see them again or to turn on Do not disturb."),
                 ("show_devices", "Devices", "USB drives and memory cards. Shows while one is plugged in, and "
                                             "opens a small menu by itself when you plug one in."),
                 ("show_keyboard", "Keyboard layout", "Which layout you type in. Click to switch. Shows when you "

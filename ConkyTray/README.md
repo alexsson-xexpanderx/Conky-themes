@@ -68,6 +68,12 @@ Your Plasma panel can stay while you try it: ConkyTray sits just above it.
 - **Devices:** appears while a USB drive or memory card is plugged in. When
   you plug one in, a small menu opens by itself to open it in the file
   manager or remove it safely, and goes away again after a few seconds.
+- **Notifications:** messages from your apps pop up in the corner above the
+  tray and go away after a few seconds; point at one to keep it there. Click
+  one to go to the app. The bell at the end keeps the ones you have had, with
+  a dot while some are unread. Click it to see them, clear them, or turn on
+  Do not disturb, which keeps everything but urgent ones quiet. Plasma showed
+  these from its own panel, so without ConkyTray running nothing shows them.
 
 The pinned apps are kept in `~/.config/conky-tray/pinned` and the menu's
 favourites in `~/.config/conky-tray/favorites`, one per line. The first time,
@@ -84,7 +90,7 @@ always match it), which edge of the screen the panel goes along (on the left
 or right it stands upright), the clock, the date and how it is written,
 and how thick the panel is. Every part of the panel can be turned off: the
 app menu button, the apps, what is playing and its sound bars, the tray icons, the microphone
-and camera warning, devices, the keyboard layout, Bluetooth, brightness,
+and camera warning, the notifications bell, devices, the keyboard layout, Bluetooth, brightness,
 volume, network, battery and the clock. The preview
 shows both ends of the panel at real size. Save, and the panel changes right
 away.

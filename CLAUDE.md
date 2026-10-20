@@ -19,7 +19,7 @@ cairo, installed by copying files into `~/.conky/`.
   wallpaper actually on screen. Lua paints; a Python helper (`mirage.py`, Pillow) finds the
   wallpaper, renders the glass and fetches Open-Meteo weather (no API key). Runs in place, like
   the orrery, and like it has a tkinter editor with a live preview (`mirage_settings.py`, for
-  sizes and placement). `wallpapers/` holds twelve wallpapers drawn for its four looks.
+  sizes and placement). `wallpapers/` holds eighteen wallpapers drawn for its four looks.
 - `ConkyTray/` — a panel replacing Plasma's bottom panel (app menu, pinned and open apps, now playing,
   tray icons, volume, network, battery, clock) in Mirage's four looks. Lua paints; a long-running
   Python helper (`tray.py`) talks to KWin, the tray protocol and Mirage's helper. Runs in place.
@@ -674,10 +674,10 @@ what the rest of the file calls.
 
 #### Wallpapers
 
-`Conky-Mirage/wallpapers/make_wallpapers.py` (numpy + Pillow) draws twelve wallpapers, three
-made for each look, as KDE packages in `wallpapers/<look>/Mirage<Look><Name>/` at 3440x1440
+`Conky-Mirage/wallpapers/make_wallpapers.py` (numpy + Pillow) draws eighteen wallpapers, three
+made for each look plus six more in Afterglow's style (below), as KDE packages in `wallpapers/<look>/Mirage<Look><Name>/` at 3440x1440
 and 3840x2160; `--size` adds another size to each package. `wallpapers/preview.jpg` is all
-twelve with the widget on them. They were picked by rendering every wallpaper in every look,
+of them with the widget on them (Glass gets three rows). They were picked by rendering every wallpaper in every look,
 and the look a wallpaper suits follows from how that look takes its colours:
 
 - Glass wants soft light behind the widget for the frosting to show (Afterglow, Silk,
@@ -687,6 +687,16 @@ and the look a wallpaper suits follows from how that look takes its colours:
   are magenta, violet, blue and teal (Shards, Stripes, Mosaic).
 - Pixel's containers are dark or pale tones of the same two hues, so it wants gentle
   colours that are not orange (Bloom, light; Pebbles and Arches, dark).
+
+Lagoon, Ember, Nebula, Borealis, Lilac and Glacier were asked for as "more like Afterglow"
+(the user runs Afterglow with Metro): `pools_of_light` is Afterglow's drawing with the sky, the
+pools and the warp's phases as arguments; Afterglow itself is left as it was. Each keeps light
+behind the widget for Glass and, for Metro, pairs two colour families as Afterglow does (rose
+and amber against blue): with one family the four tiles came out nearly one colour. Gold or
+orange as a main hue gave Metro a mustard tile (turned 40 degrees), so Ember's fire is crimson
+and coral, which gives Afterglow's orange-brown instead. All six were checked in Glass and
+Metro through `mirage_preview.lua`. Their cells in the preview show a different time and
+weather from the first twelve, which were rendered on another day.
 
 Layout is in units of the screen's height and placed by the width's share where the shape
 has to keep its place (the Stripes' angle, the Arches' spacing), or 16:9 versions crowd
@@ -749,7 +759,7 @@ widget alone and Python composites each frame onto the whole wallpaper: the mp4/
 desktop at 1920 wide (the wallpapers' art is mostly away from the widget), the gif is the
 widget's own rectangle, and `conky-mirage-close-up.mp4` is the widget with a 36px margin of
 wallpaper at full size (888x996). Stills for posting live in `Conky-Mirage/previews/` (the
-looks and all twelve wallpapers on the desktop, in several widths; `close-ups/` crops to the
+looks and all the wallpapers on the desktop, in several widths; `close-ups/` crops to the
 widget). The user wants such files in the repo, not in ~/Pictures. Each wallpaper is held 105 frames, because the widget takes about
 2.6s to finish recolouring after a change (half a second to notice, a poll, the 1.6s fade);
 at 88 it never settled. Pictures and videos pin `text_size` to 1.00: the user runs 120%, and
@@ -796,7 +806,7 @@ xdotool here.
 
 `ConkyTray/` is a panel at the bottom edge: `start_conky_tray` (the window), `tray.lua` (draws,
 takes the mouse), `tray.py` (a long-running helper), `tray_kwin.js` (a KWin script the helper
-loads), `tray_menu.py` (popup menus), `tray_launcher.py` (the app menu), `tray_preview.lua`
+loads), `tray_menu.py` (popup menus), `tray_notify.py` (notification pop-ups), `tray_launcher.py` (the app menu), `tray_preview.lua`
 (renders the panel to a PNG) and `tray_settings.py` (the settings window). It was
 built in one go at the user's request ("build something first that works, then we go from
 there"); expect it to change.
@@ -839,7 +849,7 @@ there"); expect it to change.
   items. Passive items are hidden, as Plasma hides them. Plasma's own tray entries (volume,
   network, Bluetooth, clipboard, notifications) are plasmoids, not items, and vanish with the
   panel: volume (`pactl subscribe` + `wpctl`), network (`nmcli monitor`) and battery (`/sys`) are
-  drawn by ConkyTray itself; the rest is not done yet.
+  drawn by ConkyTray itself, and so are notifications (below); clipboard is not done yet.
 - **A tray icon's left click** calls the item's `Activate`. Plasma first hands the app an
   activation token (`ProvideXdgActivationToken`), which lets it bring its window forward; a
   panel that is not Plasma cannot get one (KWin grants tokens to the active window's client or
@@ -1061,6 +1071,30 @@ there"); expect it to change.
   app. Screen sharing needs nothing: xdg-desktop-portal-kde shows its own tray item (a
   KStatusNotifierItem) while sharing. Both were tested with made-up `pactl` output and a held
   file standing in for the camera, not by recording the user.
+- **Notifications** (`show_notifications` only hides the bell; the service always runs). Plasma's
+  notification server lived in its panel's tray (the Notifications applet) and went with it. The
+  name `org.freedesktop.Notifications` then had no owner, so the bus activated Plasma's stand-in
+  (`org.kde.plasma.Notifications.service`, `plasma_waitforname`), which waits for Plasma, and an
+  app's `Notify` waited with it until the bus gave up. Claude desktop calls it in a way that
+  blocks its main process: its `main.log` showed seven `event-loop-stall` warnings of 110s
+  each, every one starting at a notification (a reply finished, a question asked) and ending in
+  "Electron notification failed to display"; a 90s `dbus-monitor` showed the panel sending it
+  nothing. So the helper serves the name (`serve_notifications`, `do_not_queue` so a running
+  service is left alone, `allow_replacement` so Plasma can take it back): `Notify` answers at
+  once with an id, keeps a history of 30 (not `transient` ones) and has `tray_notify.py` show a
+  pop-up. That is one long-running GTK program, JSON lines both ways like the app menu: a
+  layer-shell window per pop-up, never taking the keyboard, anchored to the corner at the tray
+  end (margins count from the room the panels leave, so no exclusive-zone sums), newest nearest
+  the panel, at most four, timer paused while the pointer is on it, in the menus' colours.
+  Capabilities: body, actions, icon-static, persistence (no body-markup, so apps send plain
+  text). Default timeout 6s, critical never; Do not disturb (`~/.config/conky-tray/
+  notifications.json`) shows only critical ones. Pictures: `image-data` (fetched with
+  `byte_arrays=True`, so a big image is not a list of a million `dbus.Byte`s), `image-path`,
+  the app icon, the desktop file's icon, as PNGs in `notify/`. Clicking one invokes `default`
+  if offered, then, as for tray icons, brings the app's window forward through KWin (by the
+  caller's pid or `desktop-entry`), since without Plasma's activation token it cannot itself.
+  The bell is the last tray symbol, an accent dot while unread; its click is the usual menu
+  (history, Do not disturb, Clear all) and marks all read.
 - **Previewing with a made-up state**: `TRAY_CACHE=<dir> lua tray_preview.lua out.png` renders
   from `<dir>/state.lua`, but only once `<dir>/serial` exists, since the Lua loads the state
   when the serial changes; without it the panel renders empty.

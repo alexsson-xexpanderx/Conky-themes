@@ -68,7 +68,9 @@ settings window, pick Folded above the preview.
 
 ## Wallpapers
 
-There are twelve wallpapers made for Mirage in `wallpapers`, three for each look.
+There are eighteen wallpapers made for Mirage in `wallpapers`, three for each look,
+and six more like Afterglow: soft pools of coloured light on a dark sky, in teal,
+crimson, violet, green, lilac and ice blue. They suit Glass and Metro alike.
 
 ![The wallpapers](wallpapers/preview.jpg)
 

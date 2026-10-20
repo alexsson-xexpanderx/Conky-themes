@@ -29,6 +29,7 @@ show_date    = "yes"          -- the date under the time
 date_format  = "%a %d %b"     -- how the date is written, see "man strftime"
 
 show_privacy    = "yes"       -- a warning while an app uses your microphone or camera
+show_notifications = "yes"    -- a bell with the notifications you have had
 show_devices    = "auto"      -- USB drives and cards, while one is plugged in
 show_keyboard   = "yes"       -- the keyboard layout, when you have more than one
 show_bluetooth  = "yes"
@@ -220,7 +221,7 @@ local function poll(now)
     for _, t in ipairs(state.tasks) do if t.icon then wanted[t.icon] = true end end
     for _, t in ipairs(state.tray) do if t.icon then wanted[t.icon] = true end end
     for _, k in ipairs({"volume", "network", "battery", "launcher", "bluetooth", "brightness", "devices",
-                        "privacy"}) do
+                        "privacy", "notifications"}) do
       if state[k] and state[k].icon then wanted[state[k].icon] = true end
     end
     for _, k in ipairs({"title_png", "artist_png", "art"}) do
@@ -270,7 +271,7 @@ end
 local BLOCK_METRO = {launcher = 1, tasks = 2, tray = 3, clock = 4, media = 1}
 -- The tray's own icons (not the apps'), drawn in the tray's block.
 local STATUS_KIND = {volume = true, network = true, battery = true, bluetooth = true, brightness = true,
-                     keyboard = true, devices = true, privacy = true}
+                     keyboard = true, devices = true, privacy = true, notifications = true}
 local BLOCK_PIXEL = {launcher = "px_primary_c", tasks = "px_surface", tray = "px_secondary_c",
                      clock = "px_tertiary_c", media = "px_primary_c"}
 
@@ -489,6 +490,10 @@ local function status_list()
   if yes(show_network) and state.network then list[#list + 1] = {kind = "network", item = state.network} end
   local b = tostring(show_battery):lower()
   if state.battery and (b == "auto" or b == "yes") then list[#list + 1] = {kind = "battery", item = state.battery} end
+  -- Last, as in Plasma's tray: the bell.
+  if yes(show_notifications) and state.notifications then
+    list[#list + 1] = {kind = "notifications", item = state.notifications}
+  end
   return list
 end
 
@@ -1098,16 +1103,17 @@ local function draw_panel(cr, L)
           paint_mask(cr, s, cx - L.tray_icon / 2, cy - L.tray_icon / 2, L.tray_icon, colors.ink)
         elseif s then paint_icon(cr, s, cx - L.tray_icon / 2, cy - L.tray_icon / 2, L.tray_icon) end
       end
-      if h.kind == "privacy" then
+      if h.kind == "privacy" or (h.kind == "notifications" and (item.unread or 0) > 0) then
         -- The red dot that means recording, on any background: ringed in
-        -- the block's own colour so it stands off the icon.
+        -- the block's own colour so it stands off the icon. The bell's,
+        -- for notifications not yet seen, is in the accent colour.
         local r = 3.6 * L.u
         cairo_new_path(cr)
         cairo_arc(cr, cx + 6.5 * L.u, cy - 6.5 * L.u, r + 1.6 * L.u, 0, 2 * pi)
         source(cr, colors.bg, 1)
         cairo_fill(cr)
         cairo_arc(cr, cx + 6.5 * L.u, cy - 6.5 * L.u, r, 0, 2 * pi)
-        source(cr, {0.94, 0.22, 0.24}, 1)
+        source(cr, h.kind == "privacy" and {0.94, 0.22, 0.24} or colors.accent, 1)
         cairo_fill(cr)
       end
     elseif h.kind == "media" then

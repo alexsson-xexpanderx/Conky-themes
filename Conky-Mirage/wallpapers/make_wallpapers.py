@@ -712,11 +712,131 @@ def arches(cv):
     return lin_of(img)
 
 
+def pools_of_light(cv, sky, pools, warp, vignette=0.22, stars=110, star_below=0.55):
+    """Afterglow's way of drawing: soft pools of coloured light on a dark sky,
+    their shapes flowing through a gentle warp. pools are (x as a share of
+    the width, y, width, height, angle, colour, strength); warp is four
+    phases, so each wallpaper's light flows its own way."""
+    A, X, Y = cv.A, cv.X, cv.Y
+    p1, p2, p3, p4 = warp
+    WX = X + 0.07 * np.sin(2.4 * Y + p1) + 0.035 * np.sin(5.1 * Y + 1.7 * X + p2)
+    WY = Y + 0.06 * np.sin(1.9 * X + p3) + 0.025 * np.sin(4.3 * X - 2.6 * Y + p4)
+    img = cv.fill(ramp(Y, sky))
+    for fx, cy, rx, ry, ang, colour, strength in pools:
+        img = mix(img, ok(colour), strength * cv.blob(fx * A, cy, rx, ry, ang, WX, WY))
+    out = lin_of(img)
+    r2 = ((X - A / 2) / (A * 0.75)) ** 2 + ((Y - 0.45) / 0.9) ** 2
+    out *= (1 - vignette * np.clip(r2, 0, 1))[..., None]
+    if stars:
+        cv.stars(out, int(stars * A), 0.0, star_below, 0.06, avoid=lambda x, y: y > star_below - 0.05)
+    return out
+
+
+def lagoon(cv):
+    """Glass: teal and aqua light welling up along the bottom, deep sea
+    blue above, an indigo glow where the widget sits."""
+    return pools_of_light(cv, [(0, "#03101a"), (0.6, "#06202c"), (1, "#082a36")], [
+        (0.50, 0.32, 0.75, 0.38, -8, "#163a6a", 0.50),
+        (1.00, 0.24, 0.62, 0.42, 22, "#3046b0", 0.62),     # behind the widget
+        (0.98, 0.64, 0.36, 0.30, 0, "#2f7fd6", 0.42),
+        (0.20, 1.02, 0.66, 0.34, 6, "#0ca8a4", 0.94),
+        (0.52, 1.06, 0.62, 0.30, -4, "#4ddcba", 0.86),
+        (0.38, 0.98, 0.26, 0.15, 0, "#b6fff0", 0.48),
+        (0.76, 1.06, 0.46, 0.26, 10, "#c8607e", 0.58),
+        (0.30, 0.18, 0.80, 0.30, 0, "#020a10", 0.65),
+    ], warp=(1.4, 0.3, 2.2, 1.1))
+
+
+def ember(cv):
+    """Glass: crimson and coral rising up the left like the glow of embers,
+    fading through wine into plum and violet behind the widget. Kept off
+    orange and gold: Metro turns those 40 degrees, into mustard."""
+    return pools_of_light(cv, [(0, "#0c0507"), (0.6, "#16080c"), (1, "#1e0b10")], [
+        (0.46, 0.40, 0.70, 0.36, -20, "#4a1428", 0.55),
+        (1.00, 0.22, 0.58, 0.42, 25, "#5a1f70", 0.62),     # behind the widget
+        (1.02, 0.66, 0.34, 0.28, 0, "#3f3a9e", 0.42),
+        (0.04, 0.95, 0.52, 0.40, 30, "#c8163e", 0.92),
+        (0.24, 1.08, 0.60, 0.28, -4, "#f2475a", 0.85),
+        (0.10, 0.70, 0.30, 0.20, 40, "#e0305c", 0.55),
+        (0.16, 1.00, 0.24, 0.14, 0, "#ffb89c", 0.45),
+        (0.58, 1.08, 0.48, 0.24, 8, "#b8233e", 0.55),
+        (0.30, 0.16, 0.80, 0.28, 0, "#0a0406", 0.65),
+    ], warp=(0.2, 2.4, 0.5, 3.0), stars=70)
+
+
+def nebula(cv):
+    """Glass: a stream of magenta, violet and blue light climbing from the
+    bottom left corner up to the widget, among many stars."""
+    return pools_of_light(cv, [(0, "#06040e"), (0.6, "#0b0718"), (1, "#110a22")], [
+        (0.08, 0.96, 0.72, 0.30, -28, "#c2187a", 0.88),
+        (0.30, 0.78, 0.74, 0.26, -27, "#7b2fd6", 0.78),
+        (0.54, 0.56, 0.74, 0.26, -26, "#4a3fe0", 0.66),
+        (0.98, 0.26, 0.66, 0.40, 22, "#1a9cc4", 0.66),     # behind the widget
+        (0.78, 0.40, 0.56, 0.24, -25, "#3f63e0", 0.48),
+        (0.16, 0.90, 0.28, 0.12, -28, "#ff7ac8", 0.45),
+        (0.66, 1.06, 0.56, 0.24, -10, "#0a0616", 0.55),    # dark under the stream
+        (0.18, 0.18, 0.62, 0.26, 0, "#04030a", 0.60),
+    ], warp=(2.0, 1.0, 0.4, 2.2), stars=230, star_below=1.0)
+
+
+def borealis(cv):
+    """Glass: green and mint light low across the screen, with a rose glow
+    to the right and a cool cyan one behind the widget."""
+    return pools_of_light(cv, [(0, "#030d0b"), (0.6, "#061a16"), (1, "#08221d")], [
+        (0.50, 0.34, 0.78, 0.36, -6, "#1e2c66", 0.48),
+        (1.00, 0.24, 0.58, 0.42, 25, "#3a4fc0", 0.64),     # behind the widget
+        (0.98, 0.64, 0.34, 0.28, 0, "#6a5ad8", 0.40),
+        (0.12, 1.04, 0.66, 0.34, 6, "#17a865", 0.90),
+        (0.40, 1.10, 0.62, 0.30, -6, "#6fe8a8", 0.78),
+        (0.28, 0.99, 0.24, 0.14, 0, "#d6ffe6", 0.42),
+        (0.70, 1.07, 0.46, 0.25, 10, "#cf4f8e", 0.58),
+        (0.30, 0.18, 0.80, 0.30, 0, "#020907", 0.65),
+    ], warp=(0.9, 2.8, 1.7, 0.2))
+
+
+def lilac(cv):
+    """Glass: a softer, lighter dusk: orchid and peach blooming in the
+    middle of the bottom, periwinkle behind the widget."""
+    return pools_of_light(cv, [(0, "#17132b"), (0.6, "#211a3e"), (1, "#2a2048")], [
+        (0.50, 0.34, 0.78, 0.40, -10, "#4f4294", 0.55),
+        (1.00, 0.22, 0.58, 0.42, 25, "#6f86dc", 0.62),     # behind the widget
+        (0.98, 0.64, 0.34, 0.28, 0, "#9a8fe6", 0.40),
+        (0.30, 1.06, 0.62, 0.32, 4, "#cf86c4", 0.86),
+        (0.52, 1.10, 0.56, 0.28, -4, "#ffb39c", 0.82),
+        (0.46, 1.00, 0.22, 0.13, 0, "#ffe2d4", 0.45),
+        (0.08, 1.00, 0.46, 0.30, 12, "#8e5ec8", 0.60),
+        (0.76, 1.06, 0.44, 0.24, 8, "#b67fd6", 0.50),
+        (0.30, 0.16, 0.80, 0.28, 0, "#120e22", 0.55),
+    ], warp=(2.6, 0.6, 2.9, 1.5), vignette=0.18, stars=60)
+
+
+def glacier(cv):
+    """Glass: icy light from the bottom left corner, deep cobalt into pale
+    cyan, sweeping up under a cool blue glow behind the widget."""
+    return pools_of_light(cv, [(0, "#040915"), (0.6, "#08132a"), (1, "#0b1a36")], [
+        (0.50, 0.36, 0.76, 0.38, -12, "#1a2c66", 0.50),
+        (1.00, 0.22, 0.60, 0.42, 25, "#2f6fd6", 0.66),     # behind the widget
+        (0.98, 0.62, 0.36, 0.28, 0, "#2fb8c8", 0.44),
+        (0.02, 0.98, 0.56, 0.40, 28, "#2448c8", 0.88),
+        (0.22, 1.06, 0.58, 0.28, -2, "#7fdcff", 0.78),
+        (0.12, 0.96, 0.22, 0.14, 0, "#e6fbff", 0.45),
+        (0.46, 1.08, 0.50, 0.24, 6, "#3a8de8", 0.55),
+        (0.70, 1.08, 0.42, 0.22, 10, "#c86a9a", 0.48),
+        (0.30, 0.17, 0.80, 0.30, 0, "#03070f", 0.65),
+    ], warp=(1.1, 1.9, 2.5, 0.7))
+
+
 # key: (name, the look it was made for, how to draw it, seed)
 WALLPAPERS = {
     "afterglow": ("Afterglow", "glass", afterglow, 11),
     "silk": ("Silk", "glass", silk, 3),
     "orbit": ("Orbit", "glass", orbit, 5),
+    "lagoon": ("Lagoon", "glass", lagoon, 43),
+    "ember": ("Ember", "glass", ember, 47),
+    "nebula": ("Nebula", "glass", nebula, 53),
+    "borealis": ("Borealis", "glass", borealis, 59),
+    "lilac": ("Lilac", "glass", lilac, 61),
+    "glacier": ("Glacier", "glass", glacier, 67),
     "horizon": ("Horizon", "solid", horizon, 23),
     "dunes": ("Dunes", "solid", dunes, 17),
     "pines": ("Pines", "solid", pines, 29),

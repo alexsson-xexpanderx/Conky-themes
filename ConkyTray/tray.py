@@ -670,6 +670,9 @@ class Daemon:
         self.art_fetching, self.last_skip = set(), 0
         self.mic_apps, self.camera_apps, self.privacy = [], [], None
         self.capture, self.capture_failed = None, False
+        self.notifier, self.notes, self.note_history, self.note_ids = None, {}, [], 0
+        self.note_unread, self.notifications, self.notes_object = 0, None, None
+        self.dnd = self.load_dnd()
         import collections
         self.counts = collections.Counter()   # what kept it busy, for the log
         self.cpu_seen = (time.monotonic(), os.times())
@@ -713,7 +716,7 @@ class Daemon:
             self.loop.run()
         finally:
             self.stop_kwin()
-            for proc in getattr(self, "monitors", []) + [self.launcher, self.menu, self.capture]:
+            for proc in getattr(self, "monitors", []) + [self.launcher, self.menu, self.capture, self.notifier]:
                 if proc is not None and proc.returncode is None and proc.poll() is None:
                     proc.terminate()
 
@@ -724,6 +727,7 @@ class Daemon:
     def start(self):
         GLib = self.GLib
         self.read_layout()
+        self.serve_notifications()
         self.start_kwin()
         self.start_tray()
         self.watch_volume()
@@ -835,6 +839,7 @@ class Daemon:
             self.read_brightness()
             self.read_devices()
             self.update_privacy()
+            self.update_bell()
         if any(old.get(k) != layout.get(k) for k in ("scale", "media_ink", "task_icon")):
             self.build_media()
         if old.get("visualizer") != layout.get("visualizer"):
@@ -979,6 +984,8 @@ class Daemon:
             self.media_click(parts[1], parts[2] if len(parts) >= 7 else "toggle", rect)
         elif what == "privacy":
             self.privacy_click(parts[1], rect)
+        elif what == "notifications":
+            self.notifications_click(parts[1], rect)
         # "close-menu", a click on the panel where nothing is, needs nothing more.
 
     # ------------------------------------------------------------- state
@@ -995,6 +1002,7 @@ class Daemon:
             "volume": self.volume, "network": self.network, "battery": self.battery,
             "bluetooth": self.bluetooth, "brightness": self.brightness, "keyboard": self.keyboard,
             "devices": self.devices, "media": self.media, "privacy": self.privacy,
+            "notifications": self.notifications,
             "launcher": {"icon": self.launcher_icon(), "color": self.launcher_colour(),
                          "symbolic": self.launcher_symbolic},
             "theme": self.theme, "mirage": self.mirage_settings or None,
@@ -2765,6 +2773,283 @@ class Daemon:
                     self.kwin_action([max(mine, key=lambda w: self.recency.get(w["id"], 0))["id"]], "activate")
             elif choice == "settings":
                 detached(["systemsettings", "kcm_pulseaudio"])
+
+        self.open_menu(items, rect, chosen)
+
+
+    # ----------------------------------------------------- notifications
+
+    NOTES = "org.freedesktop.Notifications"
+
+    def serve_notifications(self):
+        """Be the desktop's notification service. Plasma's lived in its
+        panel's tray and went with it; with nobody serving, the bus started
+        Plasma's stand-in, which waits for Plasma, and an app asking for a
+        notification waited with it until the bus gave up (Claude desktop
+        froze for 110s each time). A service already running is left alone,
+        and Plasma may take the name back."""
+        import dbus.service
+        daemon, NOTES = self, self.NOTES
+
+        class Notifications(dbus.service.Object):
+            @dbus.service.method(NOTES, in_signature="", out_signature="as")
+            def GetCapabilities(self):
+                return ["body", "actions", "icon-static", "persistence"]
+
+            @dbus.service.method(NOTES, in_signature="susssasa{sv}i", out_signature="u",
+                                 sender_keyword="sender", byte_arrays=True)
+            def Notify(self, app, replaces, icon, summary, body, actions, hints, timeout, sender=None):
+                return daemon.notify(str(app), int(replaces), str(icon), str(summary), str(body),
+                                     [str(a) for a in actions], dict(hints), int(timeout), sender)
+
+            @dbus.service.method(NOTES, in_signature="u")
+            def CloseNotification(self, ident):
+                daemon.close_note(int(ident), 3)
+
+            @dbus.service.method(NOTES, in_signature="", out_signature="ssss")
+            def GetServerInformation(self):
+                return ("ConkyTray", "Conky-themes", "1.0", "1.2")
+
+            @dbus.service.signal(NOTES, signature="uu")
+            def NotificationClosed(self, ident, reason):
+                pass
+
+            @dbus.service.signal(NOTES, signature="us")
+            def ActionInvoked(self, ident, key):
+                pass
+
+        try:
+            self.notes_name = dbus.service.BusName(NOTES, self.bus, allow_replacement=True, do_not_queue=True)
+        except self.dbus.exceptions.NameExistsException:
+            log("another notification service is running, so the panel shows none")
+            return
+        self.notes_object = Notifications(self.bus, "/org/freedesktop/Notifications")
+        self.update_bell()
+
+    def load_dnd(self):
+        try:
+            with open(os.path.join(CONFIG, "notifications.json"), encoding="utf-8") as handle:
+                return bool(json.load(handle).get("dnd"))
+        except (OSError, ValueError, AttributeError):
+            return False
+
+    def save_dnd(self):
+        write_atomic(os.path.join(CONFIG, "notifications.json"), json.dumps({"dnd": self.dnd}) + "\n")
+
+    def notify(self, app, replaces, icon, summary, body, actions, hints, timeout, sender):
+        """A notification: shown as a pop-up (unless Do not disturb is on and
+        it is not urgent) and kept behind the bell. Answers at once."""
+        if replaces and replaces in self.notes:
+            ident = replaces
+        else:
+            self.note_ids = self.note_ids % 0xFFFFFFF0 + 1
+            ident = self.note_ids
+        hints = {str(k): v for k, v in hints.items()}
+        try:
+            urgency = int(hints.get("urgency", 1))
+        except (TypeError, ValueError):
+            urgency = 1
+        desktop = str(hints.get("desktop-entry", "") or "")
+        desktop = desktop[:-8] if desktop.endswith(".desktop") else desktop
+        entry = self.apps.entries.get(desktop) or {}
+        name = app or entry.get("name") or "Notification"
+        if timeout < 0:
+            timeout = 0 if urgency == 2 else 6000
+        elif timeout > 0:
+            timeout = max(timeout, 2000)
+        note = {"id": ident, "app": name, "summary": summary, "body": body,
+                "icon": self.note_picture(ident, icon, hints, entry.get("icon", "")),
+                "actions": list(zip(actions[0::2], actions[1::2])), "pid": self.sender_pid(sender),
+                "desktop": desktop.lower(), "at": time.time()}
+        self.notes[ident] = note
+        if not hints.get("transient"):
+            self.note_history = [n for n in self.note_history if n["id"] != ident]
+            self.note_history.insert(0, note)
+            del self.note_history[30:]
+            if not (replaces and replaces == ident):
+                self.note_unread += 1
+        if not self.dnd or urgency == 2:
+            self.tell_notifier({"cmd": "show", "id": ident, "app": name, "summary": summary, "body": body,
+                                "icon": note["icon"], "actions": note["actions"], "timeout": timeout,
+                                "urgency": urgency, "side": self.layout.get("side", "bottom"),
+                                "colors": self.palette_for_menu()})
+        self.counts["notifications"] += 1
+        self.update_bell()
+        return ident
+
+    def sender_pid(self, sender):
+        try:
+            bus = self.bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+            return int(bus.GetConnectionUnixProcessID(sender, dbus_interface="org.freedesktop.DBus"))
+        except (self.dbus.DBusException, TypeError, ValueError):
+            return 0
+
+    def note_picture(self, ident, icon, hints, app_icon):
+        """A picture for the pop-up: the image the app sent, else its icon,
+        else the icon of its desktop file."""
+        folder = os.path.join(self.cache, "notify")
+        os.makedirs(folder, exist_ok=True)
+        keep = {n.get("icon") for n in list(self.notes.values()) + self.note_history}
+        for old in glob.glob(os.path.join(folder, "n*.png")):
+            if old not in keep:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+        data = hints.get("image-data") or hints.get("image_data") or hints.get("icon_data")
+        if data:
+            try:
+                from PIL import Image
+                w, h, stride, alpha, _bits, _channels, raw = data
+                mode = "RGBA" if bool(alpha) else "RGB"
+                image = Image.frombuffer(mode, (int(w), int(h)), bytes(raw), "raw", mode, int(stride), 1)
+                image.thumbnail((96, 96))
+                path = os.path.join(folder, "n%d-%d.png" % (ident, int(time.time() * 1000) % 100000))
+                image.save(path)
+                return path
+            except Exception as error:                   # a bad picture must not lose the notification
+                log("notification picture: %s" % error)
+        for name in (str(hints.get("image-path", "") or ""), icon, app_icon):
+            if not name:
+                continue
+            if name.startswith("file://"):
+                import urllib.parse
+                name = urllib.parse.unquote(name[7:])
+            if os.path.isabs(name):
+                if os.path.exists(name):
+                    return self.icons.render(name, 96) or name
+                continue
+            found = self.icons.find(name, 96)
+            if found:
+                return self.icons.render(found, 96)
+        return None
+
+    def close_note(self, ident, reason):
+        note = self.notes.pop(ident, None)
+        if note is None:
+            return
+        self.tell_notifier({"cmd": "close", "id": ident})
+        if self.notes_object:
+            self.notes_object.NotificationClosed(self.dbus.UInt32(ident), self.dbus.UInt32(reason))
+
+    def start_notifier(self):
+        """The pop-ups are their own program (GTK), kept running."""
+        if self.notifier and self.notifier.returncode is None:
+            return
+        try:
+            self.notifier = subprocess.Popen([sys.executable, os.path.join(HERE, "tray_notify.py")],
+                                             stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                             stderr=open(os.path.join(self.cache, "notify.log"), "a"),
+                                             text=True, bufsize=1, preexec_fn=die_with_parent)
+        except OSError as error:
+            log("no notification pop-ups: %s" % error)
+            self.notifier = None
+            return
+        proc = self.notifier
+
+        def readable(fd, condition):
+            if condition & (self.GLib.IO_HUP | self.GLib.IO_ERR):
+                return False
+            line = proc.stdout.readline()
+            if not line:
+                return False
+            self.notifier_said(line.strip())
+            return True
+
+        self.GLib.io_add_watch(proc.stdout.fileno(), self.GLib.IO_IN | self.GLib.IO_HUP | self.GLib.IO_ERR, readable)
+
+        def gone(code):
+            if self.notifier is proc:
+                self.notifier = None
+
+        self.watch(proc, gone)
+
+    def tell_notifier(self, spec):
+        self.start_notifier()
+        if not self.notifier:
+            return
+        try:
+            self.notifier.stdin.write(json.dumps(spec) + "\n")
+            self.notifier.stdin.flush()
+        except (OSError, ValueError):
+            self.notifier = None
+
+    def notifier_said(self, line):
+        try:
+            event = json.loads(line)
+            ident = int(event.get("id", 0))
+        except (ValueError, TypeError, AttributeError):
+            return
+        note = self.notes.get(ident)
+        what = event.get("ev")
+        if what == "action":
+            if self.notes_object:
+                self.notes_object.ActionInvoked(self.dbus.UInt32(ident), str(event.get("key", "")))
+            self.raise_note_app(note)
+        elif what == "clicked":
+            self.raise_note_app(note)
+        elif what == "closed":
+            self.close_note(ident, int(event.get("reason", 2)) or 2)
+
+    def note_windows(self, note):
+        if not note:
+            return []
+        names = {note.get("desktop") or "", str(note.get("app") or "").lower()} - {""}
+        return [w for w in self.windows
+                if (note.get("pid") and w.get("pid") == note["pid"])
+                or names & {str(w.get(k) or "").lower() for k in ("cls", "desktop", "name")}]
+
+    def raise_note_app(self, note):
+        """After a notification is clicked, its app's window, brought forward
+        if the app has not done it itself: like a tray icon's app, it cannot
+        without the token only Plasma gets."""
+        if not note:
+            return
+
+        def later():
+            mine = self.note_windows(note)
+            if mine and not any(w.get("active") for w in mine):
+                target = max(mine, key=lambda w: self.recency.get(w["id"], 0))
+                self.kwin_action([target["id"]], "activate")
+            return False
+
+        self.GLib.timeout_add(350, later)
+
+    def update_bell(self):
+        if not self.notes_object:
+            bell = None
+        else:
+            names = (("notification-disabled", "notifications-disabled") if self.dnd else
+                     ("notification", "notifications", "preferences-desktop-notification-bell"))
+            bell = {"icon": self.status_icon(*names), "unread": self.note_unread, "dnd": self.dnd}
+        if bell != self.notifications:
+            self.notifications = bell
+            self.changed()
+
+    def notifications_click(self, button, rect):
+        if not self.notes_object:
+            return
+        history = list(self.note_history[:12])
+        items = [{"header": True, "label": "Notifications" if history else "No notifications"}]
+        for i, n in enumerate(history):
+            text = " ".join((n["summary"] or n["body"] or "").split())
+            items.append({"id": "n:%d" % i, "label": "%s: %s" % (n["app"], text) if text else n["app"]})
+        items += [{"separator": True}, {"id": "dnd", "label": "Do not disturb", "checked": self.dnd}]
+        if history:
+            items.append({"id": "clear", "label": "Clear all"})
+        self.note_unread = 0
+        self.update_bell()
+
+        def chosen(choice):
+            if choice.startswith("n:"):
+                self.raise_note_app(history[int(choice[2:])])
+            elif choice == "dnd":
+                self.dnd = not self.dnd
+                self.save_dnd()
+                self.update_bell()
+            elif choice == "clear":
+                self.note_history = []
+                self.update_bell()
 
         self.open_menu(items, rect, chosen)
 
