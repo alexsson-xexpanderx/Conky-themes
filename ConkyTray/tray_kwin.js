@@ -17,6 +17,13 @@ function info(w) {
     };
 }
 
+// An app's own window: KWin's own windows (a title bar button's tooltip is
+// one) count as normal windows too, but KWin does not manage them and they
+// are pop-ups. Listed, the tooltip showed on the panel as an unknown app.
+function isAppWindow(w) {
+    return w.normalWindow && w.managed && !w.popupWindow;
+}
+
 function isPanel(w) {
     return String(w.resourceClass).indexOf("conky") === 0 || String(w.resourceName).indexOf("conky") === 0;
 }
@@ -25,7 +32,7 @@ function send(gone) {
     var windows = [], panels = [];
     workspace.windowList().forEach(function (w) {
         if (w === gone) return;
-        if (w.normalWindow && !w.skipTaskbar) windows.push(info(w));
+        if (isAppWindow(w) && !w.skipTaskbar) windows.push(info(w));
     });
     workspace.stackingOrder.forEach(function (w) {
         if (w === gone || !isPanel(w)) return;
@@ -52,7 +59,7 @@ var edgesSent = null;
 function sendEdges(gone) {
     var reached = {};
     workspace.windowList().forEach(function (w) {
-        if (w === gone || !w.normalWindow || w.minimized || isPanel(w) || !onDesktop(w)) return;
+        if (w === gone || !isAppWindow(w) || w.minimized || isPanel(w) || !onDesktop(w)) return;
         var a = workspace.clientArea(KWin.MaximizeArea, w), g = w.frameGeometry;
         if (g.y + g.height >= a.y + a.height - 1) reached.bottom = true;
         if (g.y <= a.y + 1) reached.top = true;

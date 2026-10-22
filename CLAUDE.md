@@ -824,7 +824,10 @@ there"); expect it to change.
   the screen in logical units, which the config gets from `tray.py screen` (`kscreen-doctor -j`).
 - **The window list** comes from `tray_kwin.js`, which KWin runs: it calls
   `org.conkytray /Tray Windows(json)` on window add/remove/activate and caption, minimise and
-  attention changes, with the windows (`normalWindow && !skipTaskbar`) and the geometry of every
+  attention changes, with the windows (`isAppWindow`: `normalWindow && managed && !popupWindow`,
+  and not `skipTaskbar`; KWin's own windows count as normal, so a title bar button's tooltip
+  showed as an unknown app on the panel each time the user pointed at Minimize, Maximize or
+  Close; checked that every real window is `managed` and not a pop-up) and the geometry of every
   window whose class starts with "conky". The helper picks its own panel by conky's pid (Lua reads
   it from `/proc/self/stat` and writes it to `layout`): a Wayland client cannot learn its own
   position, and the glass needs it. KWin scripts cannot be called from outside, so each action
