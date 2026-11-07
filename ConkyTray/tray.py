@@ -572,6 +572,63 @@ class Apps:
         return ident if ident in self.entries else None
 
 
+class AppWatch:
+    """Calls react() when apps are installed or removed: a .desktop file, or
+    one of the submenus programs install, added, changed or deleted. A package
+    writes many files at once, so changes less than `delay` ms apart count as
+    one. A folder that is not there yet (~/.local/share/applications before
+    the first app goes there) is watched for from the one above it."""
+
+    def __init__(self, react, delay=2000):
+        from gi.repository import Gio, GLib
+        self.Gio, self.GLib = Gio, GLib
+        self.react, self.delay = react, delay
+        self.monitors, self.pending = [], None
+        self.watch()
+
+    def folders(self):
+        config = os.environ.get("XDG_CONFIG_HOME") or os.path.join(HOME, ".config")
+        roots = [os.path.join(base, "applications") for base in data_dirs()]
+        roots += [os.path.join(d, "menus", "applications-merged")
+                  for d in [config] + (os.environ.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(":") if d]
+        found = []
+        for root in roots:
+            if os.path.isdir(root):
+                found += [(path, None) for path, _, _ in os.walk(root, followlinks=True)]
+            else:
+                parent = os.path.dirname(root)
+                while parent != os.path.dirname(parent) and not os.path.isdir(parent):
+                    parent = os.path.dirname(parent)
+                found.append((parent, os.path.relpath(root, parent).split(os.sep)[0]))
+        return found
+
+    def watch(self):
+        for monitor in self.monitors:
+            monitor.cancel()
+        self.monitors = []
+        for path, only in self.folders():
+            try:
+                monitor = self.Gio.File.new_for_path(path).monitor_directory(self.Gio.FileMonitorFlags.NONE, None)
+            except self.GLib.Error as error:
+                log("cannot watch %s for apps: %s" % (path, error.message))
+                continue
+            monitor.connect("changed", lambda m, f, o, event, only=only: self.changed(f, only))
+            self.monitors.append(monitor)
+
+    def changed(self, file, only):
+        if only and file.get_basename() != only:
+            return                  # something else in /usr/share, say
+        if self.pending:
+            self.GLib.source_remove(self.pending)
+        self.pending = self.GLib.timeout_add(self.delay, self.settled)
+
+    def settled(self):
+        self.pending = None
+        self.watch()                # new subfolders, and folders now there
+        self.react()
+        return False
+
+
 def plasma_launchers():
     """The pinned apps of Plasma's icon task manager, to start from."""
     path = os.path.join(HOME, ".config", "plasma-org.kde.plasma.desktop-appletsrc")
@@ -638,6 +695,7 @@ class Daemon:
         self.loop = GLib.MainLoop()
         self.icons = Icons(self.cache)
         self.apps = Apps()
+        self.app_watch = AppWatch(self.reload_apps)
         self.layout, self.layout_text = {}, None
         self.windows, self.panels, self.recency, self.tick = [], [], {}, 0
         self.edges = set()             # screen edges a window reaches, from KWin
@@ -1325,6 +1383,14 @@ class Daemon:
     def save_pins(self, pins):
         write_atomic(os.path.join(CONFIG, "pinned"),
                      "# Apps pinned to ConkyTray, one desktop file name per line.\n" + "".join(p + "\n" for p in pins))
+
+    def reload_apps(self):
+        """An app was installed or removed: read them all again, so the panel
+        knows its name and icon and the menu can start it."""
+        self.apps = Apps()
+        log("apps changed: %d now" % len(self.apps.entries))
+        self.rebuild_tasks()
+        self.changed()
 
     def rebuild_tasks(self):
         groups = {}

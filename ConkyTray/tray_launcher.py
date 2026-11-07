@@ -344,9 +344,26 @@ class Launcher(Gtk.Window):
         self.connect("focus-in-event", self.focus_in)
         self.connect("focus-out-event", self.focus_out)
         self.connect("key-press-event", self.key)
+        self.connect("button-press-event", self.overlay_press)
         self.build()
+        self.stale = False
+        self.app_watch = tray.AppWatch(self.reload_apps)
 
     # ------------------------------------------------------------ building
+
+    def reload_apps(self):
+        """An app was installed or removed: read them again and build the menu
+        anew, but not while it is open; it waits until it closes."""
+        if self.get_visible():
+            self.stale = True
+            return
+        self.stale = False
+        self.apps = tray.Apps()
+        self.favorites = [f for f in load_favorites(self.apps) if f in self.apps.entries]
+        self.remove(self.overlay)
+        self.overlay.destroy()
+        self.build()
+        note("apps changed: %d now" % len(self.apps.entries))
 
     @staticmethod
     def clear(widget, cr):
@@ -523,7 +540,6 @@ class Launcher(Gtk.Window):
         self.context.set_valign(Gtk.Align.START)
         self.context.set_no_show_all(True)
         self.overlay.add_overlay(self.context)
-        self.connect("button-press-event", self.overlay_press)
         self.refresh()
 
     def tile(self, title, icon, action, n):
@@ -793,6 +809,8 @@ class Launcher(Gtk.Window):
         if self.get_visible():
             self.hide()
             self.hidden_at = time.monotonic()
+            if self.stale:
+                GLib.idle_add(lambda: (self.reload_apps(), False)[1])
 
     def focus_in(self, *unused):
         note("keyboard in")
